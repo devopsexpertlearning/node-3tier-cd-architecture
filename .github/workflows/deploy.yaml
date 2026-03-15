@@ -8,86 +8,20 @@ on:
       - 'api/**'
       - 'web/**'
       - 'k8s/**'
-  workflow_run:
-    workflows: ["Terraform Infrastructure"]
-    types: [completed]
-    branches:
-      - main
 
 # Prevent concurrent deploys — never cancel mid-deploy (pods could be inconsistent)
 concurrency:
   group: deploy-dev-${{ github.ref }}
   cancel-in-progress: false
 
-# ── JOB 1: CHECK ─────────────────────────────────────────────────────────────
+# ── JOB 1: TEST ──────────────────────────────────────────────────────────────
 jobs:
-  check:
-    name: Check Deploy Conditions
-    runs-on: ubuntu-latest
-    outputs:
-      should_deploy: ${{ steps.decide.outputs.should_deploy }}
-      commit_sha:    ${{ steps.decide.outputs.commit_sha }}
-    steps:
-      - name: Evaluate trigger
-        id: decide
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const appPaths = ['api/', 'web/', 'k8s/'];
-
-            if (context.eventName === 'push') {
-              const { data: tfRuns } = await github.rest.actions.listWorkflowRunsForRepo({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: 'terraform.yaml',
-                head_sha: context.sha,
-              });
-
-              if (tfRuns.total_count > 0) {
-                console.log('Terraform also triggered — deferring to workflow_run');
-                core.setOutput('should_deploy', 'false');
-                return;
-              }
-
-              console.log('App-only push — deploying');
-              core.setOutput('should_deploy', 'true');
-              core.setOutput('commit_sha', context.sha);
-              return;
-            }
-
-            const run = context.payload.workflow_run;
-
-            if (run.conclusion !== 'success') {
-              console.log(`Terraform ${run.conclusion} — skipping deploy`);
-              core.setOutput('should_deploy', 'false');
-              return;
-            }
-
-            const { data: commit } = await github.rest.repos.getCommit({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              ref: run.head_sha,
-            });
-
-            const appChanged = commit.files.some(f =>
-              appPaths.some(p => f.filename.startsWith(p))
-            );
-
-            console.log(`Terraform completed + app changed: ${appChanged}`);
-            core.setOutput('should_deploy', appChanged ? 'true' : 'false');
-            core.setOutput('commit_sha', run.head_sha);
-
-# ── JOB 2: TEST ──────────────────────────────────────────────────────────────
   test:
     name: Unit Tests
-    needs: check
-    if: needs.check.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.commit_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -110,15 +44,12 @@ jobs:
           npm ci
           npm test --if-present
 
-# ── JOB 3: BUILD API (parallel with build-web) ───────────────────────────────
+# ── JOB 2: BUILD API (parallel with build-web) ───────────────────────────────
   build-api:
     name: Build API
-    needs: [check, test]
-    if: needs.check.outputs.should_deploy == 'true'
+    needs: test
     runs-on: ubuntu-latest
     environment: dev
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
 
     permissions:
       contents: read
@@ -126,16 +57,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.commit_sha }}
 
       - name: Set image tag
         id: meta
-        run: |
-          SHA="${{ needs.check.outputs.commit_sha }}"
-          IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        run: echo "image_tag=${{ github.run_id }}-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -152,7 +77,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Build with layer cache — significantly faster on repeated builds
       - name: Build API image
         uses: docker/build-push-action@v6
         with:
@@ -175,15 +99,12 @@ jobs:
       - name: Push API image to ECR
         run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
 
-# ── JOB 4: BUILD WEB (parallel with build-api) ───────────────────────────────
+# ── JOB 3: BUILD WEB (parallel with build-api) ───────────────────────────────
   build-web:
     name: Build Web
-    needs: [check, test]
-    if: needs.check.outputs.should_deploy == 'true'
+    needs: test
     runs-on: ubuntu-latest
     environment: dev
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
 
     permissions:
       contents: read
@@ -191,16 +112,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.commit_sha }}
 
       - name: Set image tag
         id: meta
-        run: |
-          SHA="${{ needs.check.outputs.commit_sha }}"
-          IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
-          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        run: echo "image_tag=${{ github.run_id }}-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -239,11 +154,10 @@ jobs:
       - name: Push Web image to ECR
         run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
 
-# ── JOB 5: DEPLOY ────────────────────────────────────────────────────────────
+# ── JOB 4: DEPLOY ────────────────────────────────────────────────────────────
   deploy:
     name: Deploy to EKS
-    needs: [check, build-api, build-web]
-    if: needs.check.outputs.should_deploy == 'true'
+    needs: [build-api, build-web]
     runs-on: ubuntu-latest
     environment: dev
 
@@ -253,8 +167,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.check.outputs.commit_sha }}
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ github.run_id }}-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -295,12 +211,11 @@ jobs:
         run: |
           sudo apt-get install -y gettext-base
 
-          SHA="${{ needs.check.outputs.commit_sha }}"
           export AWS_REGION=${{ vars.AWS_REGION }}
           export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
           export PROJECT_NAME=${{ vars.PROJECT_NAME }}
           export ENV=${{ github.environment }}
-          export IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
+          export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
 
           mkdir -p .k8s-processed
           for file in k8s/*.yaml; do
@@ -318,7 +233,6 @@ jobs:
       - name: Verify API rollout
         run: kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=300s
 
-      # Runs only if any step above failed — restores last known good version
       - name: Rollback on failure
         if: failure()
         run: |
