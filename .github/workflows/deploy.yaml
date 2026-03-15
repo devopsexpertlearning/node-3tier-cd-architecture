@@ -324,7 +324,7 @@ jobs:
           export AWS_REGION=${{ vars.AWS_REGION }}
           export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
           export PROJECT_NAME=${{ vars.PROJECT_NAME }}
-          export ENV=${{ github.environment }}
+          export ENV=${{ vars.ENV }}
           export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
 
           mkdir -p .k8s-processed
