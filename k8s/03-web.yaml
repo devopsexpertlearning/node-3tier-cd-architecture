@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-deployment
+  namespace: node-3tier-app
+  labels:
+    app: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  # Zero-downtime rolling update strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        # Tag will be injected by the CI/CD pipeline
+        image: ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${ENV}-web:${IMAGE_TAG}
+        ports:
+        - containerPort: 3000
+        env:
+        - name: API_HOST
+          # Internal Kubernetes DNS routing to the API service
+          value: "http://api-service.node-3tier-app.svc.cluster.local:3001"
+        # Health checks for fault tolerance
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "512Mi"
+          limits:
+            cpu: "500m"
+            memory: "1Gi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-service
+  namespace: node-3tier-app
+spec:
+  selector:
+    app: web
+  ports:
+    - protocol: TCP
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP
