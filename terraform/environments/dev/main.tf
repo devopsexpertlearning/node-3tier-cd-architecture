@@ -51,6 +51,21 @@ resource "aws_s3_bucket_policy" "alb_logs" {
   })
 }
 
+# Allow EKS Fargate pods (auto-created cluster SG) to reach RDS on port 5432
+resource "aws_vpc_security_group_ingress_rule" "rds_from_eks_cluster" {
+  for_each = local.rds_instances
+
+  security_group_id            = module.security_groups.security_group_ids[each.value.security_group_key]
+  referenced_security_group_id = module.eks.cluster_security_group_id
+  from_port                    = 5432
+  to_port                      = 5432
+  ip_protocol                  = "tcp"
+
+  tags = local.common_tags
+
+  depends_on = [module.eks, module.security_groups]
+}
+
 resource "aws_vpc_security_group_ingress_rule" "eks_cluster_from_albs_tgs" {
   for_each = {
     for tg in local.alb_tgs : "${tg.alb_key}-${tg.tg_key}" => tg

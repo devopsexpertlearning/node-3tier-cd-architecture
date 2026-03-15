@@ -84,16 +84,8 @@ fargate_profiles = {
 # Security Groups
 security_groups = {
   appdb-rds = {
-    description = "RDS Security Group for appdb"
-    ingress_rules = [
-      {
-        cidr_ipv4         = ""
-        from_port         = 5432
-        protocol          = "tcp"
-        referenced_sg_key = "eks-cluster"
-        to_port           = 5432
-      }
-    ]
+    description   = "RDS Security Group for appdb"
+    ingress_rules = []
     egress_rules = [
       {
         cidr_ipv4 = "0.0.0.0/0"
