@@ -6,20 +6,21 @@ on:
       - main
     paths:
       - 'terraform/environments/dev/**'
-
   pull_request:
     branches:
       - main
     paths:
       - 'terraform/environments/dev/**'
-
   schedule:
     - cron: '0 6 * * *'
 
 env:
   TF_WORKING_DIR: terraform/environments/dev
-  TF_VERSION: "1.7.5"
+  TF_VERSION: "~1.12"
+  TF_STATE_BUCKET: devopsexpert-shared
+  TF_STATE_REGION: ap-south-1
 
+# Prevent concurrent terraform runs — never cancel mid-run (state corruption risk)
 concurrency:
   group: terraform-dev-${{ github.ref }}
   cancel-in-progress: false
@@ -29,13 +30,10 @@ permissions:
   pull-requests: write
   issues: write
 
-###########################################################
-# JOB 1 — VALIDATE
-###########################################################
-
+# ── JOB 1: VALIDATE ──────────────────────────────────────────────────────────
 jobs:
   validate:
-    name: Terraform Validate
+    name: Validate
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
@@ -44,30 +42,37 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
-
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Cache Terraform
+      - name: Cache Terraform plugins
         uses: actions/cache@v4
         with:
-          path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+          path: ${{ env.TF_WORKING_DIR }}/.terraform
+          key: terraform-${{ hashFiles('**/versions.tf', '**/.terraform.lock.hcl') }}
+          restore-keys: terraform-
 
-      - name: Terraform Format
+      - name: Terraform Format Check
         run: terraform fmt -check -recursive
+        working-directory: ${{ github.workspace }}/terraform
 
       - name: Terraform Init
         run: terraform init
@@ -75,146 +80,205 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
-###########################################################
-# JOB 2 — PLAN
-###########################################################
-
+# ── JOB 2: PLAN ──────────────────────────────────────────────────────────────
   plan:
-    name: Terraform Plan
+    name: Plan
     needs: validate
     runs-on: ubuntu-latest
-
     outputs:
-      plan_status: ${{ steps.plan.outcome }}
+      plan_timestamp: ${{ steps.timestamp.outputs.ts }}
+      plan_outcome:   ${{ steps.plan.outcome }}
 
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
-
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Restore Terraform Cache
+      - name: Restore Terraform plugin cache
         uses: actions/cache@v4
         with:
-          path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+          path: ${{ env.TF_WORKING_DIR }}/.terraform
+          key: terraform-${{ hashFiles('**/versions.tf', '**/.terraform.lock.hcl') }}
+          restore-keys: terraform-
 
       - name: Terraform Init
         run: terraform init
 
+      - name: Generate plan timestamp
+        id: timestamp
+        run: echo "ts=$(date -u +%Y-%m-%d-%H%M%S)" >> $GITHUB_OUTPUT
+
       - name: Terraform Plan
         id: plan
-        run: |
-          terraform plan -out=tfplan -no-color | tee plan.txt
+        run: terraform plan -out=./tfplan -no-color 2>&1 | tee ./plan_output.txt
         continue-on-error: true
 
-      - name: Upload Plan Artifact
+      # Save plan binary as artifact — apply job uses this exact plan
+      # Prevents plan/apply race where infra changes between the two steps
+      - name: Upload plan artifact
         if: steps.plan.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: tfplan
+          name: tfplan-${{ github.run_id }}
           path: |
             ${{ env.TF_WORKING_DIR }}/tfplan
-            ${{ env.TF_WORKING_DIR }}/plan.txt
+            ${{ env.TF_WORKING_DIR }}/plan_output.txt
+          retention-days: 1
+
+      # Save approved plan to S3 for permanent audit trail
+      # Path: savedplan/environments/dev/tfplan-{date}-{time}
+      - name: Save approved plan to S3 (audit)
+        if: steps.plan.outcome == 'success'
+        run: |
+          PREFIX="savedplan/environments/dev/tfplan-${{ steps.timestamp.outputs.ts }}"
+
+          aws s3 cp ./tfplan \
+            s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary \
+            --region ${{ env.TF_STATE_REGION }} \
+            --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},ref=${{ github.ref }}"
+
+          aws s3 cp ./plan_output.txt \
+            s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
+            --region ${{ env.TF_STATE_REGION }} \
+            --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},ref=${{ github.ref }}"
+
+          echo "Plan saved to s3://${{ env.TF_STATE_BUCKET }}/$PREFIX"
 
       - name: Comment Plan on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs')
-            const plan = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan.txt','utf8')
+            const fs = require('fs');
+            let planOutput = fs.readFileSync('plan_output.txt', 'utf8');
+            if (planOutput.length > 60000) {
+              planOutput = planOutput.substring(0, 60000) + '\n... (truncated, see full logs)';
+            }
+            const output = `#### Terraform Plan \`${{ steps.plan.outcome }}\`
+
+            <details><summary>Show Plan</summary>
+
+            \`\`\`
+            ${planOutput}
+            \`\`\`
+
+            </details>
+
+            *Triggered by: @${{ github.actor }}, Workflow: \`${{ github.workflow }}\`*`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `### Terraform Plan
+              body: output
+            });
 
-              \`\`\`
-              ${plan.substring(0,65000)}
-              \`\`\`
-              `
-            })
-
-      - name: Fail if Plan Failed
+      - name: Fail on Plan Error
         if: steps.plan.outcome == 'failure'
         run: exit 1
 
-###########################################################
-# JOB 3 — APPLY
-###########################################################
-
+# ── JOB 3: APPLY ─────────────────────────────────────────────────────────────
   apply:
-    name: Terraform Apply
+    name: Apply
     needs: plan
-
-    if: github.event_name == 'push' &&
-        github.ref == 'refs/heads/main' &&
-        needs.plan.outputs.plan_status == 'success'
-
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: dev   # Protection rules, approval gates, env-scoped secrets
 
-    environment: dev   # approval gate
+    env:
+      APPROVAL_EMAIL: ${{ vars.APPROVAL_EMAIL }}
 
     defaults:
       run:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
-
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Restore Terraform Cache
+      - name: Restore Terraform plugin cache
         uses: actions/cache@v4
         with:
-          path: ~/.terraform.d/plugin-cache
-          key: terraform-${{ hashFiles('**/.terraform.lock.hcl') }}
+          path: ${{ env.TF_WORKING_DIR }}/.terraform
+          key: terraform-${{ hashFiles('**/versions.tf', '**/.terraform.lock.hcl') }}
+          restore-keys: terraform-
 
       - name: Terraform Init
         run: terraform init
 
-      - name: Download Plan
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: ${{ env.TF_WORKING_DIR }}
+      # Download the exact approved plan from S3 using timestamp from plan job
+      - name: Download approved plan from S3
+        run: |
+          PREFIX="savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}"
 
+          aws s3 cp \
+            s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary \
+            ./tfplan \
+            --region ${{ env.TF_STATE_REGION }}
+
+          echo "Downloaded plan from s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary"
+      # Approval gate — pipeline is already paused by GitHub Environment protection rules.
+      # This step prints the approval context to the console so the reviewer can see
+      # exactly what will be applied before clicking Approve in the GitHub UI.
+      - name: Waiting for approval
+        run: |
+          echo "=================================================="
+          echo " TERRAFORM APPLY — PENDING APPROVAL"
+          echo "=================================================="
+          echo " Approver : ${{ env.APPROVAL_EMAIL }}"
+          echo " Run ID   : ${{ github.run_id }}"
+          echo " Commit   : ${{ github.sha }}"
+          echo " Actor    : ${{ github.actor }}"
+          echo " Plan     : s3://${{ env.TF_STATE_BUCKET }}/savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}.txt"
+          echo " Approve  : https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "=================================================="
+          
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
 
-###########################################################
-# JOB 4 — DRIFT DETECTION
-###########################################################
+      # Update S3 metadata with apply outcome for audit completeness
+      - name: Tag applied plan in S3
+        if: always()
+        run: |
+          PREFIX="savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}"
 
+          aws s3 cp \
+            s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
+            s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
+            --region ${{ env.TF_STATE_REGION }} \
+            --metadata-directive REPLACE \
+            --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},apply_outcome=${{ job.status }},applied_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ── JOB 4: DRIFT DETECTION ───────────────────────────────────────────────────
   drift-detection:
     name: Drift Detection
     if: github.event_name == 'schedule'
@@ -225,31 +289,129 @@ jobs:
         working-directory: ${{ env.TF_WORKING_DIR }}
 
     steps:
-
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Configure AWS
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ap-south-1
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
 
       - name: Terraform Init
         run: terraform init
 
-      - name: Terraform Drift Check
+      # -detailed-exitcode: 0=no changes, 1=error, 2=drift detected
+      - name: Terraform Plan (drift check)
         id: drift
         run: |
           set +e
-          terraform plan -detailed-exitcode
-          echo "exitcode=$?" >> $GITHUB_OUTPUT
+          terraform plan -detailed-exitcode -no-color 2>&1 | tee drift_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
 
-      - name: Drift Found
-        if: steps.drift.outputs.exitcode == '2'
+      - name: Resolve drift status
+        id: status
         run: |
-          echo "Infrastructure drift detected"
+          case "${{ steps.drift.outputs.exit_code }}" in
+            0) echo "has_drift=false" >> $GITHUB_OUTPUT ;;
+            2) echo "has_drift=true"  >> $GITHUB_OUTPUT ;;
+            *) echo "has_drift=error" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Create or update GitHub issue on drift
+        if: steps.status.outputs.has_drift != 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const isDrift = '${{ steps.status.outputs.has_drift }}' === 'true';
+            const label   = 'terraform-drift';
+            const now     = new Date().toISOString().split('T')[0];
+
+            let planOutput = fs.readFileSync('drift_output.txt', 'utf8');
+            if (planOutput.length > 50000) {
+              planOutput = planOutput.substring(0, 50000) + '\n... (truncated)';
+            }
+
+            const title = isDrift
+              ? `[Terraform Drift] Infrastructure drift detected — ${now}`
+              : `[Terraform Drift] Plan error during drift check — ${now}`;
+
+            const body = isDrift
+              ? `## Infrastructure Drift Detected\n\n` +
+                `Real AWS infrastructure has diverged from Terraform state.\n\n` +
+                `**Detected:** ${now}\n` +
+                `**Environment:** dev\n` +
+                `**Action required:** Review and run \`terraform apply\` or import drifted resources.\n\n` +
+                `<details><summary>Plan output</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n</details>`
+              : `## Terraform Plan Error During Drift Check\n\n` +
+                `**Date:** ${now}\n\n` +
+                `<details><summary>Error output</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n</details>`;
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: label,
+              state: 'open',
+            });
+
+            if (existing.data.length > 0) {
+              const issue = existing.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `### Daily drift check update — ${now}\n\n${body}`,
+              });
+              console.log(`Updated existing drift issue #${issue.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+              console.log('Created new drift issue');
+            }
+
+      - name: Close drift issue if no drift
+        if: steps.status.outputs.has_drift == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'terraform-drift',
+              state: 'open',
+            });
+
+            for (const issue of existing.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Drift resolved — no changes detected as of ${new Date().toISOString().split('T')[0]}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              console.log(`Closed drift issue #${issue.number}`);
+            }

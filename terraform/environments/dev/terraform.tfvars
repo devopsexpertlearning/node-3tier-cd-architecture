@@ -17,6 +17,7 @@ tags = {
   Team       = "devops"
 }
 
+
 # EKS Add-ons natively managed by Terraform
 eks_addons = {
   "vpc-cni" = {
