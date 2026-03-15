@@ -28,26 +28,28 @@ spec:
         ports:
         - containerPort: 3001
         env:
-        - name: DB_HOST
+        - name: DBHOST
           valueFrom:
             secretKeyRef:
               name: db-credentials
               key: host
-        - name: DB_USER
+        - name: DBUSER
           valueFrom:
             secretKeyRef:
               name: db-credentials
               key: username
-        - name: DB_PASS
+        - name: DBPASS
           valueFrom:
             secretKeyRef:
               name: db-credentials
               key: password
-        - name: DB_NAME
+        - name: DB
           valueFrom:
             secretKeyRef:
               name: db-credentials
               key: dbname
+        - name: DBPORT
+          value: "5432"
         # Health checks for fault tolerance
         readinessProbe:
           httpGet:
