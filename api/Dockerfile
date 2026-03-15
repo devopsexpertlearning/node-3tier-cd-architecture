@@ -10,7 +10,7 @@ RUN apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Copy app source first, then overlay with clean builder node_modules
+# Copy app source first, then overlay with clean builder node_modules.
 COPY . .
 COPY --from=builder /app/node_modules ./node_modules
 
