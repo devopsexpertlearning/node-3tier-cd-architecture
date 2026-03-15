@@ -60,7 +60,6 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push API image to Amazon ECR
-        id: build-api
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.run_id }}
@@ -69,7 +68,6 @@ jobs:
           docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG
 
       - name: Build, tag, and push Web image to Amazon ECR
-        id: build-web
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.run_id }}
@@ -79,6 +77,33 @@ jobs:
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+
+      - name: Create db-credentials secret from AWS Secrets Manager
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id ${{ vars.RDS_SECRET_NAME }} \
+            --query SecretString --output text)
+
+          kubectl create secret generic db-credentials \
+            --namespace node-3tier-app \
+            --from-literal=host=$(echo $SECRET_JSON | jq -r '.host') \
+            --from-literal=username=$(echo $SECRET_JSON | jq -r '.username') \
+            --from-literal=password=$(echo $SECRET_JSON | jq -r '.password') \
+            --from-literal=dbname=$(echo $SECRET_JSON | jq -r '.dbname') \
+            --save-config --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Run DB init job
+        run: |
+          kubectl apply -f k8s/01-namespace.yaml
+          kubectl apply -f k8s/06-db-init.yaml
+
+          # Delete previous job run if exists (Jobs are immutable)
+          kubectl delete job db-init -n node-3tier-app --ignore-not-found=true
+          kubectl apply -f k8s/06-db-init.yaml
+
+          # Wait for job to complete before deploying API
+          kubectl wait --for=condition=complete job/db-init \
+            -n node-3tier-app --timeout=120s
 
       - name: Deploy to EKS
         run: |
@@ -90,15 +115,13 @@ jobs:
           export ENV=${{ github.environment }}
           export IMAGE_TAG=${{ github.run_id }}
 
-          # Apply namespace first (no template variables)
-          kubectl apply -f k8s/01-namespace.yaml
-
-          # Process remaining manifests with only the known substitution variables
+          # Process app manifests — skip namespace and db-init (already applied above)
           mkdir -p .k8s-processed
           for file in k8s/*.yaml; do
-            [ "$(basename $file)" = "01-namespace.yaml" ] && continue
+            name=$(basename $file)
+            [[ "$name" == "01-namespace.yaml" || "$name" == "06-db-init.yaml" ]] && continue
             envsubst '${AWS_REGION} ${ACCOUNT_ID} ${PROJECT_NAME} ${ENV} ${IMAGE_TAG}' \
-              < "$file" > ".k8s-processed/$(basename $file)"
+              < "$file" > ".k8s-processed/$name"
           done
 
           kubectl apply -f .k8s-processed/

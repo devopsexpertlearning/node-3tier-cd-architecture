@@ -28,6 +28,7 @@ variable "eks_addons" {
   }))
 }
 variable "ecr_repository_names" { type = list(string) }
+variable "ecr_image_retention_days" { type = number }
 
 variable "fargate_profiles" {
   type = map(object({

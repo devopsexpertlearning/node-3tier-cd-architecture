@@ -28,7 +28,7 @@ resource "aws_ecr_repository" "repos" {
   })
 }
 
-# Lifecycle policy to keep only last 10 images
+# Lifecycle policy — expire images older than retention days
 resource "aws_ecr_lifecycle_policy" "repos" {
   for_each   = toset(var.repository_names)
   repository = aws_ecr_repository.repos[each.key].name
@@ -36,11 +36,12 @@ resource "aws_ecr_lifecycle_policy" "repos" {
   policy = jsonencode({
     rules = [{
       rulePriority = 1
-      description  = "Keep only last 10 images"
+      description  = "Expire images older than ${var.image_retention_days} days"
       selection = {
         tagStatus   = "any"
-        countType   = "imageCountMoreThan"
-        countNumber = 10
+        countType   = "sinceImagePushed"
+        countUnit   = "days"
+        countNumber = var.image_retention_days
       }
       action = {
         type = "expire"

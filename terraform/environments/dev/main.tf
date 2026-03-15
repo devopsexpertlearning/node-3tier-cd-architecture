@@ -186,10 +186,11 @@ module "eks_addons_helm" {
 module "ecr" {
   source = "../../modules/ecr"
 
-  project_name     = var.project_name
-  environment      = var.environment
-  repository_names = var.ecr_repository_names
-  tags             = var.tags
+  project_name         = var.project_name
+  environment          = var.environment
+  repository_names     = var.ecr_repository_names
+  image_retention_days = var.ecr_image_retention_days
+  tags                 = var.tags
 }
 
 # 8. S3

@@ -17,22 +17,6 @@ tags = {
   Team       = "devops"
 }
 
-# S3 Buckets
-s3_buckets = {
-  alb-logs = {
-    name              = "node-3tier-dev-alb-logs"
-    enable_versioning = false
-    force_destroy     = true
-    expiration_days   = 30
-  }
-  velero-backup = {
-    name              = "node-3tier-dev-velero-backup"
-    enable_versioning = false
-    force_destroy     = true
-    expiration_days   = 30
-  }
-}
-
 # EKS Add-ons natively managed by Terraform
 eks_addons = {
   "vpc-cni" = {
@@ -51,7 +35,8 @@ eks_addons = {
     resolve_conflicts_on_update = "OVERWRITE"
   }
 }
-ecr_repository_names = ["web", "api"]
+ecr_repository_names     = ["web", "api"]
+ecr_image_retention_days = 1
 
 # EKS Helm Add-ons (Envoy, Velero)
 enable_metrics_server        = true
@@ -200,6 +185,22 @@ rds_instances = {
     security_group_key                                            = "appdb-rds"
     skip_final_snapshot                                           = true
     rds_automated_backups_replication_region                      = null # "ap-south-1"
+  }
+}
+
+# S3 Buckets
+s3_buckets = {
+  alb-logs = {
+    name              = "node-3tier-dev-alb-logs"
+    enable_versioning = false
+    force_destroy     = true
+    expiration_days   = 30
+  }
+  velero-backup = {
+    name              = "node-3tier-dev-velero-backup"
+    enable_versioning = false
+    force_destroy     = true
+    expiration_days   = 30
   }
 }
 

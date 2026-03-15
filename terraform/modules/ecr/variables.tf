@@ -24,6 +24,12 @@ variable "scan_on_push" {
   default     = true
 }
 
+variable "image_retention_days" {
+  description = "Number of days to retain ECR images before expiring"
+  type        = number
+  default     = 30
+}
+
 variable "tags" {
   type    = map(string)
   default = {}
