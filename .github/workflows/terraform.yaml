@@ -243,22 +243,7 @@ jobs:
             --region ${{ env.TF_STATE_REGION }}
 
           echo "Downloaded plan from s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary"
-      # Approval gate — pipeline is already paused by GitHub Environment protection rules.
-      # This step prints the approval context to the console so the reviewer can see
-      # exactly what will be applied before clicking Approve in the GitHub UI.
-      - name: Waiting for approval
-        run: |
-          echo "=================================================="
-          echo " TERRAFORM APPLY — PENDING APPROVAL"
-          echo "=================================================="
-          echo " Approver : ${{ env.APPROVAL_EMAIL }}"
-          echo " Run ID   : ${{ github.run_id }}"
-          echo " Commit   : ${{ github.sha }}"
-          echo " Actor    : ${{ github.actor }}"
-          echo " Plan     : s3://${{ env.TF_STATE_BUCKET }}/savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}.txt"
-          echo " Approve  : https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "=================================================="
-          
+    
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
 
