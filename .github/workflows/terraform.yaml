@@ -85,6 +85,9 @@ jobs:
     name: Plan
     needs: validate
     runs-on: ubuntu-latest
+    outputs:
+      plan_timestamp: ${{ steps.timestamp.outputs.ts }}
+      plan_outcome:   ${{ steps.plan.outcome }}
 
     defaults:
       run:
@@ -117,9 +120,13 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
+      - name: Generate plan timestamp
+        id: timestamp
+        run: echo "ts=$(date -u +%Y-%m-%d-%H%M%S)" >> $GITHUB_OUTPUT
+
       - name: Terraform Plan
         id: plan
-        run: terraform plan -out=tfplan -no-color 2>&1 | tee plan_output.txt
+        run: terraform plan -out=./tfplan -no-color 2>&1 | tee ./plan_output.txt
         continue-on-error: true
 
       # Save plan binary as artifact — apply job uses this exact plan
@@ -135,20 +142,18 @@ jobs:
           retention-days: 1
 
       # Save approved plan to S3 for permanent audit trail
-      # Path: environments/dev/plans/{date}/tfplan-{run_id}-{sha}
+      # Path: savedplan/environments/dev/tfplan-{date}-{time}
       - name: Save approved plan to S3 (audit)
         if: steps.plan.outcome == 'success'
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
-          PREFIX="environments/dev/plans/$DATE/tfplan-${{ github.run_id }}-${SHA:0:7}"
+          PREFIX="savedplan/environments/dev/tfplan-${{ steps.timestamp.outputs.ts }}"
 
-          aws s3 cp ${{ env.TF_WORKING_DIR }}/tfplan \
+          aws s3 cp ./tfplan \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary \
             --region ${{ env.TF_STATE_REGION }} \
             --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},ref=${{ github.ref }}"
 
-          aws s3 cp ${{ env.TF_WORKING_DIR }}/plan_output.txt \
+          aws s3 cp ./plan_output.txt \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
             --region ${{ env.TF_STATE_REGION }} \
             --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},ref=${{ github.ref }}"
@@ -227,12 +232,10 @@ jobs:
       - name: Terraform Init
         run: terraform init
 
-      # Download the exact approved plan from S3 — guarantees apply uses audited plan
+      # Download the exact approved plan from S3 using timestamp from plan job
       - name: Download approved plan from S3
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
-          PREFIX="environments/dev/plans/$DATE/tfplan-${{ github.run_id }}-${SHA:0:7}"
+          PREFIX="savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}"
 
           aws s3 cp \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary \
@@ -244,22 +247,18 @@ jobs:
       - name: Terraform Apply
         run: terraform apply -auto-approve tfplan
 
-      # Tag the applied plan in S3 with outcome for audit completeness
+      # Update S3 metadata with apply outcome for audit completeness
       - name: Tag applied plan in S3
         if: always()
         run: |
-          DATE=$(date -u +%Y-%m-%d)
-          SHA="${{ github.sha }}"
-          PREFIX="environments/dev/plans/$DATE/tfplan-${{ github.run_id }}-${SHA:0:7}"
-          OUTCOME="${{ job.status }}"
+          PREFIX="savedplan/environments/dev/tfplan-${{ needs.plan.outputs.plan_timestamp }}"
 
-          # Copy with updated metadata to record apply outcome
           aws s3 cp \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.txt \
             --region ${{ env.TF_STATE_REGION }} \
             --metadata-directive REPLACE \
-            --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},apply_outcome=$OUTCOME,applied_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            --metadata "run_id=${{ github.run_id }},sha=${{ github.sha }},actor=${{ github.actor }},apply_outcome=${{ job.status }},applied_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ── JOB 4: DRIFT DETECTION ───────────────────────────────────────────────────
   drift-detection:
