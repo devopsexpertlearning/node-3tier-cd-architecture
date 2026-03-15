@@ -1,0 +1,23 @@
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: web-tgb
+  namespace: node-3tier-app
+spec:
+  serviceRef:
+    name: web-service
+    port: 3000
+  targetGroupARN: ${TG_ARN_WEB}
+  targetType: ip
+---
+apiVersion: elbv2.k8s.aws/v1beta1
+kind: TargetGroupBinding
+metadata:
+  name: api-tgb
+  namespace: node-3tier-app
+spec:
+  serviceRef:
+    name: api-service
+    port: 3001
+  targetGroupARN: ${TG_ARN_API}
+  targetType: ip

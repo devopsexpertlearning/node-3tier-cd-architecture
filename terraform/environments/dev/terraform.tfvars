@@ -43,12 +43,15 @@ ecr_image_retention_days = 1
 enable_metrics_server        = true
 metrics_server_chart_version = "3.12.2"
 
-enable_envoy_gateway        = true
+enable_envoy_gateway        = false
 envoy_gateway_chart_version = "v1.7.1"
 
 enable_velero          = true
 velero_chart_version   = "11.4.0"
 enable_velero_schedule = false
+
+enable_alb_controller        = true
+alb_controller_chart_version = "1.11.0"
 
 # Fargate Observability
 enable_fargate_logging       = true

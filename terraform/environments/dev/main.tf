@@ -194,6 +194,11 @@ module "eks_addons_helm" {
   adot_collector_chart_version = var.adot_collector_chart_version
   adot_iam_role_arn            = module.iam_irsa.fargate_pod_execution_role_arn
 
+  enable_alb_controller        = var.enable_alb_controller
+  alb_controller_chart_version = var.alb_controller_chart_version
+  alb_controller_iam_role_arn  = module.iam_irsa.alb_controller_role_arn
+  vpc_id                       = module.vpc.vpc_id
+
   tags = var.tags
 }
 
@@ -267,7 +272,7 @@ module "alb" {
   source   = "../../modules/alb"
   for_each = local.albs
 
-  project_name      = "${var.project_name}-${each.key}"
+  project_name      = var.project_name
   environment       = var.environment
   vpc_id            = module.vpc.vpc_id
   public_subnet_ids = module.vpc.public_subnet_ids

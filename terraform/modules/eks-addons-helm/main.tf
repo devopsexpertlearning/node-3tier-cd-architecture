@@ -123,6 +123,39 @@ resource "helm_release" "velero" {
   depends_on = [null_resource.helm_repos]
 }
 
+# AWS Load Balancer Controller
+resource "helm_release" "alb_controller" {
+  count = var.enable_alb_controller ? 1 : 0
+
+  name             = "aws-load-balancer-controller"
+  repository       = "https://aws.github.io/eks-charts"
+  chart            = "aws-load-balancer-controller"
+  version          = var.alb_controller_chart_version
+  namespace        = "kube-system"
+  create_namespace = false
+  wait             = true
+  timeout          = 300
+
+  values = [yamlencode({
+    clusterName = var.cluster_name
+    region      = var.aws_region
+    vpcId       = var.vpc_id
+    serviceAccount = {
+      create = true
+      name   = "aws-load-balancer-controller"
+      annotations = {
+        "eks.amazonaws.com/role-arn" = var.alb_controller_iam_role_arn
+      }
+    }
+  })]
+
+  lifecycle {
+    ignore_changes = [version, values]
+  }
+
+  depends_on = [null_resource.helm_repos]
+}
+
 # RBAC — allow adot-collector ServiceAccount to discover pods/nodes/services
 # Required by the Prometheus receiver's kubernetes_sd_configs (role: pod)
 resource "kubernetes_cluster_role" "adot_collector" {

@@ -327,11 +327,23 @@ jobs:
           export ENV=${{ vars.ENV }}
           export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
 
+          # Fetch target group ARNs dynamically from AWS
+          export TG_ARN_WEB=$(aws elbv2 describe-target-groups \
+            --region ${{ vars.AWS_REGION }} \
+            --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-web'].TargetGroupArn" \
+            --output text)
+          export TG_ARN_API=$(aws elbv2 describe-target-groups \
+            --region ${{ vars.AWS_REGION }} \
+            --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-api'].TargetGroupArn" \
+            --output text)
+          echo "TG_ARN_WEB=${TG_ARN_WEB}"
+          echo "TG_ARN_API=${TG_ARN_API}"
+
           mkdir -p .k8s-processed
           for file in k8s/*.yaml; do
             name=$(basename $file)
             [[ "$name" == "01-namespace.yaml" || "$name" == "06-db-init.yaml" ]] && continue
-            envsubst '${AWS_REGION} ${ACCOUNT_ID} ${PROJECT_NAME} ${ENV} ${IMAGE_TAG}' \
+            envsubst '${AWS_REGION} ${ACCOUNT_ID} ${PROJECT_NAME} ${ENV} ${IMAGE_TAG} ${TG_ARN_WEB} ${TG_ARN_API}' \
               < "$file" > ".k8s-processed/$name"
           done
 

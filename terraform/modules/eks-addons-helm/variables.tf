@@ -128,3 +128,28 @@ variable "adot_iam_role_arn" {
   type        = string
   default     = ""
 }
+
+# AWS Load Balancer Controller
+variable "enable_alb_controller" {
+  description = "Enable AWS Load Balancer Controller (required for TargetGroupBinding)"
+  type        = bool
+  default     = false
+}
+
+variable "alb_controller_chart_version" {
+  description = "AWS Load Balancer Controller Helm chart version"
+  type        = string
+  default     = "1.11.0"
+}
+
+variable "alb_controller_iam_role_arn" {
+  description = "IAM role ARN for AWS Load Balancer Controller IRSA"
+  type        = string
+  default     = ""
+}
+
+variable "vpc_id" {
+  description = "VPC ID for AWS Load Balancer Controller"
+  type        = string
+  default     = ""
+}

@@ -54,6 +54,8 @@ variable "fargate_log_retention_days" { type = number }
 variable "enable_adot_collector" { type = bool }
 variable "adot_collector_chart_version" { type = string }
 variable "adot_collector_replicas" { type = number }
+variable "enable_alb_controller" { type = bool }
+variable "alb_controller_chart_version" { type = string }
 
 variable "security_groups" {
   type = map(object({
