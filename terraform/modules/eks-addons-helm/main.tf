@@ -89,8 +89,8 @@ resource "helm_release" "velero" {
       }]
     }
     initContainers = [{
-      name  = "velero-plugin-for-aws"
-      image = "velero/velero-plugin-for-aws:v1.9.0"
+      name         = "velero-plugin-for-aws"
+      image        = "velero/velero-plugin-for-aws:v1.9.0"
       volumeMounts = [{ mountPath = "/target", name = "plugins" }]
     }]
     serviceAccount = {
@@ -186,8 +186,8 @@ resource "kubernetes_config_map" "fargate_logging" {
   }
 
   data = {
-    "flb_log_cw"  = "true"
-    "output.conf" = <<-EOT
+    "flb_log_cw"   = "true"
+    "output.conf"  = <<-EOT
       [OUTPUT]
           Name              cloudwatch_logs
           Match             *
@@ -252,8 +252,8 @@ resource "helm_release" "adot_collector" {
         prometheus = {
           config = {
             scrape_configs = [{
-              job_name        = "kubernetes-pods"
-              scrape_interval = "30s"
+              job_name              = "kubernetes-pods"
+              scrape_interval       = "30s"
               kubernetes_sd_configs = [{ role = "pod" }]
               relabel_configs = [
                 {
@@ -275,7 +275,7 @@ resource "helm_release" "adot_collector" {
       }
       processors = {
         batch = {
-          timeout  = "30s"
+          timeout         = "30s"
           send_batch_size = 1000
         }
         memory_limiter = {
@@ -286,9 +286,9 @@ resource "helm_release" "adot_collector" {
       }
       exporters = {
         awsemf = {
-          region    = var.aws_region
-          namespace = "ContainerInsights"
-          log_group_name  = "/aws/containerinsights/${var.cluster_name}/performance"
+          region                  = var.aws_region
+          namespace               = "ContainerInsights"
+          log_group_name          = "/aws/containerinsights/${var.cluster_name}/performance"
           dimension_rollup_option = "NoDimensionRollup"
         }
         awsxray = {

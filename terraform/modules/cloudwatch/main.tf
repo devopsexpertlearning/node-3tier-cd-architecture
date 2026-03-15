@@ -240,7 +240,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_latency" {
   threshold           = 1
   alarm_description   = "ALB target response time is too high (> 1s)"
   alarm_actions       = [aws_sns_topic.alarms[0].arn]
-  
+
   dimensions = {
     LoadBalancer = var.alb_arn_suffix
   }
@@ -260,7 +260,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
   threshold           = 80
   alarm_description   = "RDS CPU utilization > 80%"
   alarm_actions       = [aws_sns_topic.alarms[0].arn]
-  
+
   dimensions = {
     DBInstanceIdentifier = var.rds_instance_id
   }
@@ -279,7 +279,7 @@ resource "aws_cloudwatch_metric_alarm" "rds_storage" {
   threshold           = 5000000000 # 5 GB
   alarm_description   = "RDS free storage space below 5GB"
   alarm_actions       = [aws_sns_topic.alarms[0].arn]
-  
+
   dimensions = {
     DBInstanceIdentifier = var.rds_instance_id
   }
