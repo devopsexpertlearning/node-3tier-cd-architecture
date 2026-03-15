@@ -572,7 +572,7 @@ WEB_PORT=3000
 | `ECR_REPOSITORY_WEB` | `web` |
 | `EKS_CLUSTER_NAME` | `node-3tier-dev` |
 | `PROJECT_NAME` | `node-3tier` |
-| `RDS_SECRET_NAME` | `node-3tier-dev/appdb/credentials` |
+| `RDS_SECRET_NAME` | `node-3tier-appdb-dev-rds-creds-none` (get exact name: `aws secretsmanager list-secrets --region us-east-1 --query "SecretList[?contains(Name, 'node-3tier')].Name" --output table`) |
 
 ### Environment Variables (Settings → Environments → dev)
 

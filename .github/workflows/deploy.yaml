@@ -315,7 +315,7 @@ jobs:
           kubectl delete job db-init -n node-3tier-app --ignore-not-found=true
           kubectl apply -f k8s/06-db-init.yaml
           kubectl wait --for=condition=complete job/db-init \
-            -n node-3tier-app --timeout=120s
+            -n node-3tier-app --timeout=300s
 
       - name: Deploy app manifests
         run: |

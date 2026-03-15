@@ -90,7 +90,7 @@ security_groups = {
         cidr_ipv4         = ""
         from_port         = 5432
         protocol          = "tcp"
-        referenced_sg_key = "eks-pods"
+        referenced_sg_key = "eks-cluster"
         to_port           = 5432
       }
     ]
@@ -110,24 +110,6 @@ security_groups = {
         protocol          = "tcp"
         referenced_sg_key = ""
         to_port           = 443
-      }
-    ]
-    egress_rules = [
-      {
-        cidr_ipv4 = "0.0.0.0/0"
-        protocol  = "-1"
-      }
-    ]
-  }
-  eks-pods = {
-    description = "Security group for ALL EKS Fargate pods"
-    ingress_rules = [
-      {
-        cidr_ipv4         = "vpc_cidr"
-        from_port         = 0
-        protocol          = "tcp"
-        referenced_sg_key = ""
-        to_port           = 65535
       }
     ]
     egress_rules = [
