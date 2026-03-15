@@ -1,0 +1,110 @@
+name: Deploy to Amazon EKS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'api/**'
+      - 'web/**'
+      - 'k8s/**'
+
+jobs:
+  test:
+    name: Run Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies and test API
+        working-directory: ./api
+        run: |
+          npm ci
+          npm test --if-present
+
+      - name: Install dependencies and test Web
+        working-directory: ./web
+        run: |
+          npm ci
+          npm test --if-present
+
+  build-and-deploy:
+    name: Build, Push, and Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    environment: dev
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push API image to Amazon ECR
+        id: build-api
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.run_id }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG ./api
+          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG
+
+      - name: Build, tag, and push Web image to Amazon ECR
+        id: build-web
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.run_id }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG ./web
+          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG
+
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
+
+      - name: Deploy to EKS
+        run: |
+          sudo apt-get install -y gettext-base
+
+          export AWS_REGION=${{ vars.AWS_REGION }}
+          export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+          export PROJECT_NAME=${{ vars.PROJECT_NAME }}
+          export ENV=${{ github.environment }}
+          export IMAGE_TAG=${{ github.run_id }}
+
+          # Apply namespace first (no template variables)
+          kubectl apply -f k8s/01-namespace.yaml
+
+          # Process remaining manifests with only the known substitution variables
+          mkdir -p .k8s-processed
+          for file in k8s/*.yaml; do
+            [ "$(basename $file)" = "01-namespace.yaml" ] && continue
+            envsubst '${AWS_REGION} ${ACCOUNT_ID} ${PROJECT_NAME} ${ENV} ${IMAGE_TAG}' \
+              < "$file" > ".k8s-processed/$(basename $file)"
+          done
+
+          kubectl apply -f .k8s-processed/
+
+      - name: Verify Web Deployment Rollout
+        run: kubectl rollout status deployment/web-deployment -n node-3tier-app --timeout=300s
+
+      - name: Verify API Deployment Rollout
+        run: kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=300s

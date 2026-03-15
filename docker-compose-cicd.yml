@@ -1,0 +1,47 @@
+
+# Usage:
+#   API_IMAGE=<ecr-url>/node-3tier-dev-api:<sha> \
+#   WEB_IMAGE=<ecr-url>/node-3tier-dev-web:<sha> \
+#   docker compose -f docker-compose-cicd.yml up --abort-on-container-exit
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    image: ${API_IMAGE}
+    environment:
+      NODE_ENV: production
+      DBHOST: db
+      DBPORT: ${DBPORT:-5432}
+      DBUSER: ${DBUSER}
+      DBPASS: ${DBPASS}
+      DB: ${DB}
+      PORT: ${PORT:-3001}
+    ports:
+      - "${PORT:-3001}:${PORT:-3001}"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: ${WEB_IMAGE}
+    environment:
+      NODE_ENV: production
+      API_HOST: http://api:${PORT:-3001}
+      PORT: ${WEB_PORT:-3000}
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+    depends_on:
+      - api

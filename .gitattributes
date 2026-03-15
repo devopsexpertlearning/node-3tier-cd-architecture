@@ -1,0 +1,23 @@
+# Enforce LF line endings for all text files
+* text=auto eol=lf
+
+# Explicitly LF for these file types
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.tf      text eol=lf
+*.tfvars  text eol=lf
+*.json    text eol=lf
+*.md      text eol=lf
+*.sh      text eol=lf
+*.js      text eol=lf
+*.env*    text eol=lf
+Dockerfile* text eol=lf
+.dockerignore text eol=lf
+
+# Binary files — no line ending conversion
+*.png     binary
+*.jpg     binary
+*.gif     binary
+*.ico     binary
+*.zip     binary
+*.gz      binary
