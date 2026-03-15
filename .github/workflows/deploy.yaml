@@ -1,7 +1,6 @@
 name: Deploy to Amazon EKS
 
 on:
-  # Direct trigger — app code changed, no terraform involved
   push:
     branches:
       - main
@@ -9,21 +8,25 @@ on:
       - 'api/**'
       - 'web/**'
       - 'k8s/**'
-
-  # Chained trigger — runs after terraform pipeline completes
   workflow_run:
     workflows: ["Terraform Infrastructure"]
     types: [completed]
     branches:
       - main
 
+# Prevent concurrent deploys — never cancel mid-deploy (pods could be inconsistent)
+concurrency:
+  group: deploy-dev-${{ github.ref }}
+  cancel-in-progress: false
+
+# ── JOB 1: CHECK ─────────────────────────────────────────────────────────────
 jobs:
-  # Decide whether deploy should proceed based on trigger source
   check:
     name: Check Deploy Conditions
     runs-on: ubuntu-latest
     outputs:
       should_deploy: ${{ steps.decide.outputs.should_deploy }}
+      commit_sha:    ${{ steps.decide.outputs.commit_sha }}
     steps:
       - name: Evaluate trigger
         id: decide
@@ -32,10 +35,7 @@ jobs:
           script: |
             const appPaths = ['api/', 'web/', 'k8s/'];
 
-            // Triggered by direct push — app files changed (paths filter guaranteed)
             if (context.eventName === 'push') {
-              // Check if terraform pipeline was also triggered for this same commit.
-              // If yes — defer to workflow_run to avoid running before infra is ready.
               const { data: tfRuns } = await github.rest.actions.listWorkflowRunsForRepo({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -44,27 +44,25 @@ jobs:
               });
 
               if (tfRuns.total_count > 0) {
-                console.log('Terraform also triggered for this commit — deferring to workflow_run');
+                console.log('Terraform also triggered — deferring to workflow_run');
                 core.setOutput('should_deploy', 'false');
                 return;
               }
 
-              console.log('App-only push, no terraform triggered — deploying');
+              console.log('App-only push — deploying');
               core.setOutput('should_deploy', 'true');
+              core.setOutput('commit_sha', context.sha);
               return;
             }
 
-            // Triggered by workflow_run (terraform completed)
             const run = context.payload.workflow_run;
 
-            // Skip if terraform failed
             if (run.conclusion !== 'success') {
-              console.log(`Terraform pipeline ${run.conclusion} — skipping deploy`);
+              console.log(`Terraform ${run.conclusion} — skipping deploy`);
               core.setOutput('should_deploy', 'false');
               return;
             }
 
-            // Check if app files changed in the same commit
             const { data: commit } = await github.rest.repos.getCommit({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -75,16 +73,13 @@ jobs:
               appPaths.some(p => f.filename.startsWith(p))
             );
 
-            if (appChanged) {
-              console.log('Terraform completed + app files changed — deploying');
-            } else {
-              console.log('Terraform completed, no app files changed — skipping');
-            }
-
+            console.log(`Terraform completed + app changed: ${appChanged}`);
             core.setOutput('should_deploy', appChanged ? 'true' : 'false');
+            core.setOutput('commit_sha', run.head_sha);
 
+# ── JOB 2: TEST ──────────────────────────────────────────────────────────────
   test:
-    name: Run Unit Tests
+    name: Unit Tests
     needs: check
     if: needs.check.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
@@ -92,31 +87,38 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.check.outputs.commit_sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: |
+            api/package-lock.json
+            web/package-lock.json
 
-      - name: Install dependencies and test API
+      - name: Test API
         working-directory: ./api
         run: |
           npm ci
           npm test --if-present
 
-      - name: Install dependencies and test Web
+      - name: Test Web
         working-directory: ./web
         run: |
           npm ci
           npm test --if-present
 
-  build-and-deploy:
-    name: Build, Push, and Deploy
+# ── JOB 3: BUILD API (parallel with build-web) ───────────────────────────────
+  build-api:
+    name: Build API
     needs: [check, test]
     if: needs.check.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     environment: dev
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
 
     permissions:
       contents: read
@@ -125,15 +127,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ needs.check.outputs.commit_sha }}
 
-      # Combine run_id (pipeline trace) + short SHA (git trace) for full traceability
-      # e.g. node-3tier-dev-api:12345678901-abc1234
       - name: Set image tag
-        id: vars
+        id: meta
         run: |
-          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
-          echo "image_tag=${{ github.run_id }}-${SHA:0:7}" >> $GITHUB_OUTPUT
+          SHA="${{ needs.check.outputs.commit_sha }}"
+          IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -147,64 +149,128 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ── API ──────────────────────────────────────────────────────────────
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
+      # Build with layer cache — significantly faster on repeated builds
       - name: Build API image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
-        run: |
-          docker build \
-            -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG \
-            ./api
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: false
+          load: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
 
       - name: Scan API image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.vars.outputs.image_tag }}
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
           format: table
           exit-code: 1
           severity: CRITICAL
           ignore-unfixed: true
 
       - name: Push API image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
-        run: docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
 
-      # ── WEB ──────────────────────────────────────────────────────────────
+# ── JOB 4: BUILD WEB (parallel with build-api) ───────────────────────────────
+  build-web:
+    name: Build Web
+    needs: [check, test]
+    if: needs.check.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit_sha }}
+
+      - name: Set image tag
+        id: meta
+        run: |
+          SHA="${{ needs.check.outputs.commit_sha }}"
+          IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build Web image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
-        run: |
-          docker build \
-            -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG \
-            ./web
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          push: false
+          load: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
 
       - name: Scan Web image for vulnerabilities
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.vars.outputs.image_tag }}
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
           format: table
           exit-code: 1
           severity: CRITICAL
           ignore-unfixed: true
 
       - name: Push Web image to ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
-        run: docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG
+        run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
 
-      # ── DEPLOY ───────────────────────────────────────────────────────────
+# ── JOB 5: DEPLOY ────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy to EKS
+    needs: [check, build-api, build-web]
+    if: needs.check.outputs.should_deploy == 'true'
+    runs-on: ubuntu-latest
+    environment: dev
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit_sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
 
-      - name: Create db-credentials secret from AWS Secrets Manager
+      - name: Create namespace
+        run: kubectl apply -f k8s/01-namespace.yaml
+
+      - name: Sync db-credentials from AWS Secrets Manager
         run: |
           SECRET_JSON=$(aws secretsmanager get-secret-value \
             --secret-id ${{ vars.RDS_SECRET_NAME }} \
@@ -212,32 +278,29 @@ jobs:
 
           kubectl create secret generic db-credentials \
             --namespace node-3tier-app \
-            --from-literal=host=$(echo $SECRET_JSON | jq -r '.host') \
+            --from-literal=host=$(echo $SECRET_JSON     | jq -r '.host') \
             --from-literal=username=$(echo $SECRET_JSON | jq -r '.username') \
             --from-literal=password=$(echo $SECRET_JSON | jq -r '.password') \
-            --from-literal=dbname=$(echo $SECRET_JSON | jq -r '.dbname') \
+            --from-literal=dbname=$(echo $SECRET_JSON   | jq -r '.dbname') \
             --save-config --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Run DB init job
         run: |
-          kubectl apply -f k8s/01-namespace.yaml
-          kubectl apply -f k8s/06-db-init.yaml
-
           kubectl delete job db-init -n node-3tier-app --ignore-not-found=true
           kubectl apply -f k8s/06-db-init.yaml
-
           kubectl wait --for=condition=complete job/db-init \
             -n node-3tier-app --timeout=120s
 
-      - name: Deploy to EKS
+      - name: Deploy app manifests
         run: |
           sudo apt-get install -y gettext-base
 
+          SHA="${{ needs.check.outputs.commit_sha }}"
           export AWS_REGION=${{ vars.AWS_REGION }}
           export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
           export PROJECT_NAME=${{ vars.PROJECT_NAME }}
           export ENV=${{ github.environment }}
-          export IMAGE_TAG=${{ steps.vars.outputs.image_tag }}
+          export IMAGE_TAG="${{ github.run_id }}-${SHA:0:7}"
 
           mkdir -p .k8s-processed
           for file in k8s/*.yaml; do
@@ -249,17 +312,17 @@ jobs:
 
           kubectl apply -f .k8s-processed/
 
-      - name: Verify Web Deployment Rollout
+      - name: Verify Web rollout
         run: kubectl rollout status deployment/web-deployment -n node-3tier-app --timeout=300s
 
-      - name: Verify API Deployment Rollout
+      - name: Verify API rollout
         run: kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=300s
 
-      # Auto-rollback if any deploy/verify step above failed
-      - name: Rollback on deployment failure
+      # Runs only if any step above failed — restores last known good version
+      - name: Rollback on failure
         if: failure()
         run: |
-          echo "Deployment failed — rolling back to previous version..."
+          echo "Deployment failed — rolling back..."
           kubectl rollout undo deployment/api-deployment -n node-3tier-app || true
           kubectl rollout undo deployment/web-deployment -n node-3tier-app || true
           kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=120s
