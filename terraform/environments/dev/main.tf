@@ -56,7 +56,7 @@ resource "aws_vpc_security_group_ingress_rule" "eks_cluster_from_albs_tgs" {
     for tg in local.alb_tgs : "${tg.alb_key}-${tg.tg_key}" => tg
   }
 
-  security_group_id            = module.security_groups.security_group_ids["eks-pods"]
+  security_group_id            = module.security_groups.security_group_ids["eks-cluster"]
   referenced_security_group_id = module.security_groups.security_group_ids[local.albs[each.value.alb_key].security_group_key]
   from_port                    = each.value.port
   to_port                      = each.value.port
