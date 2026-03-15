@@ -9,18 +9,25 @@ on:
       - 'web/**'
       - 'k8s/**'
 
-# Prevent concurrent deploys — never cancel mid-deploy (pods could be inconsistent)
+# Prevent concurrent deploys — never cancel mid-deploy
 concurrency:
   group: deploy-dev-${{ github.ref }}
   cancel-in-progress: false
 
-# ── JOB 1: TEST ──────────────────────────────────────────────────────────────
+# Image tag is deterministic — same value computed independently in each job
+# Format: {run_id}-{short_sha}  e.g. 12345678901-abc1234
+env:
+  IMAGE_TAG: ${{ github.run_id }}-${{ github.sha && github.sha || '' }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 1 — TEST
+# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   test:
-    name: Unit Tests
+    name: "[1] Unit Tests"
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -44,18 +51,18 @@ jobs:
           npm ci
           npm test --if-present
 
-# ── JOB 2: BUILD API (parallel with build-web) ───────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 2 — BUILD  (api + web in parallel, save image as tar artifact)
+# ─────────────────────────────────────────────────────────────────────────────
   build-api:
-    name: Build API
+    name: "[2] Build API"
     needs: test
     runs-on: ubuntu-latest
     environment: dev
-
-    permissions:
-      contents: read
-
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set image tag
@@ -77,40 +84,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Build and export to tar — does NOT push to ECR yet
       - name: Build API image
         uses: docker/build-push-action@v6
         with:
           context: ./api
           push: false
-          load: true
+          outputs: type=docker,dest=/tmp/api.tar
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,mode=max,scope=api
 
-      - name: Scan API image for vulnerabilities
-        uses: aquasecurity/trivy-action@master
+      - name: Upload API image artifact
+        uses: actions/upload-artifact@v4
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
-          format: table
-          exit-code: 1
-          severity: CRITICAL
-          ignore-unfixed: true
+          name: api-image-${{ github.run_id }}
+          path: /tmp/api.tar
+          retention-days: 1
 
-      - name: Push API image to ECR
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
-
-# ── JOB 3: BUILD WEB (parallel with build-api) ───────────────────────────────
   build-web:
-    name: Build Web
+    name: "[2] Build Web"
     needs: test
     runs-on: ubuntu-latest
     environment: dev
-
-    permissions:
-      contents: read
-
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set image tag
@@ -137,27 +137,137 @@ jobs:
         with:
           context: ./web
           push: false
-          load: true
+          outputs: type=docker,dest=/tmp/web.tar
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,mode=max,scope=web
 
-      - name: Scan Web image for vulnerabilities
+      - name: Upload Web image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-image-${{ github.run_id }}
+          path: /tmp/web.tar
+          retention-days: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 3 — SCAN  (api + web in parallel, scan from tar — never pushed yet)
+# ─────────────────────────────────────────────────────────────────────────────
+  scan-api:
+    name: "[3] Scan API"
+    needs: build-api
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download API image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-image-${{ github.run_id }}
+          path: /tmp
+
+      # Scan directly from tar file — no ECR login needed
+      - name: Trivy scan API image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
+          input: /tmp/api.tar
           format: table
           exit-code: 1
           severity: CRITICAL
           ignore-unfixed: true
 
-      - name: Push Web image to ECR
-        run: docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
+  scan-web:
+    name: "[3] Scan Web"
+    needs: build-web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Web image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-image-${{ github.run_id }}
+          path: /tmp
 
-# ── JOB 4: DEPLOY ────────────────────────────────────────────────────────────
+      - name: Trivy scan Web image
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: /tmp/web.tar
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+          ignore-unfixed: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 4 — PUSH  (api + web in parallel, only after clean scan)
+# ─────────────────────────────────────────────────────────────────────────────
+  push-api:
+    name: "[4] Push API"
+    needs: scan-api
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ github.run_id }}-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Download API image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: api-image-${{ github.run_id }}
+          path: /tmp
+
+      - name: Load and push API image to ECR
+        run: |
+          docker load --input /tmp/api.tar
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.meta.outputs.image_tag }}
+
+  push-web:
+    name: "[4] Push Web"
+    needs: scan-web
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ github.run_id }}-${GITHUB_SHA:0:7}" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Download Web image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: web-image-${{ github.run_id }}
+          path: /tmp
+
+      - name: Load and push Web image to ECR
+        run: |
+          docker load --input /tmp/web.tar
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 5 — DEPLOY  (only after both images are pushed)
+# ─────────────────────────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to EKS
-    needs: [build-api, build-web]
+    name: "[5] Deploy to EKS"
+    needs: [push-api, push-web]
     runs-on: ubuntu-latest
     environment: dev
 
@@ -165,7 +275,7 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set image tag

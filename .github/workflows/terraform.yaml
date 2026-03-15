@@ -161,7 +161,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan_output.txt', 'utf8');
+            let planOutput = fs.readFileSync('plan_output.txt', 'utf8');
             if (planOutput.length > 60000) {
               planOutput = planOutput.substring(0, 60000) + '\n... (truncated, see full logs)';
             }
@@ -236,7 +236,7 @@ jobs:
 
           aws s3 cp \
             s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary \
-            ${{ env.TF_WORKING_DIR }}/tfplan \
+            ./tfplan \
             --region ${{ env.TF_STATE_REGION }}
 
           echo "Downloaded plan from s3://${{ env.TF_STATE_BUCKET }}/$PREFIX.binary"
@@ -324,7 +324,7 @@ jobs:
             const label   = 'terraform-drift';
             const now     = new Date().toISOString().split('T')[0];
 
-            let planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/drift_output.txt', 'utf8');
+            let planOutput = fs.readFileSync('drift_output.txt', 'utf8');
             if (planOutput.length > 50000) {
               planOutput = planOutput.substring(0, 50000) + '\n... (truncated)';
             }
