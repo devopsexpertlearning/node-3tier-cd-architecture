@@ -50,6 +50,8 @@ spec:
               key: dbname
         - name: DBPORT
           value: "5432"
+        - name: DBSSL
+          value: "true"
         # Health checks for fault tolerance
         readinessProbe:
           httpGet:
