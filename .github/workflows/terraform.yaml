@@ -11,6 +11,9 @@ on:
       - main
     paths:
       - 'terraform/environments/dev/**'
+  # Daily drift detection — alerts if real infra diverges from terraform state
+  schedule:
+    - cron: '0 6 * * *'
 
 env:
   TF_WORKING_DIR: terraform/environments/dev
@@ -18,10 +21,12 @@ env:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 jobs:
   terraform:
     name: Terraform ${{ github.event_name == 'pull_request' && 'Plan' || 'Apply' }}
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     defaults:
@@ -101,3 +106,144 @@ jobs:
       - name: Terraform Apply
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: terraform apply -auto-approve tfplan
+
+  # ── DRIFT DETECTION ──────────────────────────────────────────────────────
+  # Runs daily. Detects if real AWS infra has drifted from terraform state.
+  # Creates a GitHub issue if drift is found, updates existing if already open.
+  drift-detection:
+    name: Drift Detection
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.9"
+
+      - name: Terraform Init
+        run: terraform init
+
+      # -detailed-exitcode: 0=no changes, 1=error, 2=drift detected
+      - name: Terraform Plan (drift check)
+        id: drift
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -no-color 2>&1 | tee drift_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+        continue-on-error: true
+
+      - name: Resolve drift status
+        id: status
+        run: |
+          case "${{ steps.drift.outputs.exit_code }}" in
+            0) echo "has_drift=false" >> $GITHUB_OUTPUT ;;
+            2) echo "has_drift=true"  >> $GITHUB_OUTPUT ;;
+            *) echo "has_drift=error" >> $GITHUB_OUTPUT ;;
+          esac
+
+      - name: Create or update GitHub issue on drift
+        if: steps.status.outputs.has_drift != 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const isDrift = '${{ steps.status.outputs.has_drift }}' === 'true';
+            const label   = 'terraform-drift';
+            const now     = new Date().toISOString().split('T')[0];
+
+            let planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/drift_output.txt', 'utf8');
+            if (planOutput.length > 50000) {
+              planOutput = planOutput.substring(0, 50000) + '\n... (truncated)';
+            }
+
+            const title = isDrift
+              ? `[Terraform Drift] Infrastructure drift detected — ${now}`
+              : `[Terraform Drift] Plan error during drift check — ${now}`;
+
+            const body = isDrift
+              ? `## Infrastructure Drift Detected\n\n` +
+                `Real AWS infrastructure has diverged from Terraform state.\n\n` +
+                `**Detected:** ${now}\n` +
+                `**Environment:** dev\n` +
+                `**Action required:** Review changes and run \`terraform apply\` or import drifted resources.\n\n` +
+                `<details><summary>Plan output</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n</details>`
+              : `## Terraform Plan Error During Drift Check\n\n` +
+                `**Date:** ${now}\n\n` +
+                `<details><summary>Error output</summary>\n\n\`\`\`\n${planOutput}\n\`\`\`\n</details>`;
+
+            // Check if an open drift issue already exists — update instead of creating duplicate
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: label,
+              state: 'open',
+            });
+
+            if (existing.data.length > 0) {
+              const issue = existing.data[0];
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `### Daily drift check update — ${now}\n\n${body}`,
+              });
+              console.log(`Updated existing drift issue #${issue.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title,
+                body,
+                labels: [label],
+              });
+              console.log('Created new drift issue');
+            }
+
+      - name: Close drift issue if no drift
+        if: steps.status.outputs.has_drift == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'terraform-drift',
+              state: 'open',
+            });
+
+            for (const issue of existing.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `Drift resolved — no changes detected as of ${new Date().toISOString().split('T')[0]}. Closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              console.log(`Closed drift issue #${issue.number}`);
+            }

@@ -30,9 +30,26 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            // Triggered by direct push — paths filter already ensured app files changed
+            const appPaths = ['api/', 'web/', 'k8s/'];
+
+            // Triggered by direct push — app files changed (paths filter guaranteed)
             if (context.eventName === 'push') {
-              console.log('Direct push to app files — deploying');
+              // Check if terraform pipeline was also triggered for this same commit.
+              // If yes — defer to workflow_run to avoid running before infra is ready.
+              const { data: tfRuns } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'terraform.yaml',
+                head_sha: context.sha,
+              });
+
+              if (tfRuns.total_count > 0) {
+                console.log('Terraform also triggered for this commit — deferring to workflow_run');
+                core.setOutput('should_deploy', 'false');
+                return;
+              }
+
+              console.log('App-only push, no terraform triggered — deploying');
               core.setOutput('should_deploy', 'true');
               return;
             }
@@ -54,7 +71,6 @@ jobs:
               ref: run.head_sha,
             });
 
-            const appPaths = ['api/', 'web/', 'k8s/'];
             const appChanged = commit.files.some(f =>
               appPaths.some(p => f.filename.startsWith(p))
             );
@@ -62,7 +78,7 @@ jobs:
             if (appChanged) {
               console.log('Terraform completed + app files changed — deploying');
             } else {
-              console.log('Terraform completed but no app files changed — skipping deploy');
+              console.log('Terraform completed, no app files changed — skipping');
             }
 
             core.setOutput('should_deploy', appChanged ? 'true' : 'false');
@@ -111,6 +127,14 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      # Combine run_id (pipeline trace) + short SHA (git trace) for full traceability
+      # e.g. node-3tier-dev-api:12345678901-abc1234
+      - name: Set image tag
+        id: vars
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          echo "image_tag=${{ github.run_id }}-${SHA:0:7}" >> $GITHUB_OUTPUT
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -123,21 +147,59 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push API image to Amazon ECR
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.run_id }}
-        run: |
-          docker build -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG ./api
-          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG
+      # ── API ──────────────────────────────────────────────────────────────
 
-      - name: Build, tag, and push Web image to Amazon ECR
+      - name: Build API image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.run_id }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
         run: |
-          docker build -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG ./web
-          docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG
+          docker build \
+            -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG \
+            ./api
+
+      - name: Scan API image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_API }}:${{ steps.vars.outputs.image_tag }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Push API image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+        run: docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_API }}:$IMAGE_TAG
+
+      # ── WEB ──────────────────────────────────────────────────────────────
+
+      - name: Build Web image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+        run: |
+          docker build \
+            -t $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG \
+            ./web
+
+      - name: Scan Web image for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.vars.outputs.image_tag }}
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Push Web image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.vars.outputs.image_tag }}
+        run: docker push $ECR_REGISTRY/${{ vars.ECR_REPOSITORY_WEB }}:$IMAGE_TAG
+
+      # ── DEPLOY ───────────────────────────────────────────────────────────
 
       - name: Update kubeconfig
         run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
@@ -175,7 +237,7 @@ jobs:
           export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
           export PROJECT_NAME=${{ vars.PROJECT_NAME }}
           export ENV=${{ github.environment }}
-          export IMAGE_TAG=${{ github.run_id }}
+          export IMAGE_TAG=${{ steps.vars.outputs.image_tag }}
 
           mkdir -p .k8s-processed
           for file in k8s/*.yaml; do
@@ -192,3 +254,14 @@ jobs:
 
       - name: Verify API Deployment Rollout
         run: kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=300s
+
+      # Auto-rollback if any deploy/verify step above failed
+      - name: Rollback on deployment failure
+        if: failure()
+        run: |
+          echo "Deployment failed — rolling back to previous version..."
+          kubectl rollout undo deployment/api-deployment -n node-3tier-app || true
+          kubectl rollout undo deployment/web-deployment -n node-3tier-app || true
+          kubectl rollout status deployment/api-deployment -n node-3tier-app --timeout=120s
+          kubectl rollout status deployment/web-deployment -n node-3tier-app --timeout=120s
+          echo "Rollback complete"
