@@ -6,6 +6,7 @@ RUN npm ci --only=production
 
 # Stage 2: Minimal production image
 FROM node:24-alpine
+RUN apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
 
