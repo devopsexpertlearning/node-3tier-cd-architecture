@@ -53,7 +53,7 @@ enable_velero_schedule = false
 enable_alb_controller        = true
 alb_controller_chart_version = "3.0.0"
 
-# Fargate Observability
+# Fargate Observability for monitoring
 enable_fargate_logging       = true
 fargate_log_retention_days   = 30
 enable_adot_collector        = true
