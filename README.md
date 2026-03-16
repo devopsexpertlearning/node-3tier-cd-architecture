@@ -2,6 +2,8 @@
 
 > Toptal DevOps Engineering Task — Production-grade CI/CD architecture for a scalable, secure 3-tier Node.js application deployed on Amazon EKS with full infrastructure-as-code, automated deployments, observability, and disaster recovery.
 
+**Live Site:** [https://samplesite.devopsexpert.work.gd](https://samplesite.devopsexpert.work.gd)
+
 ---
 
 ## Table of Contents
@@ -383,9 +385,10 @@ AWS **CloudFront** distribution sits in front of the ALB:
 
 | Behavior | Cache TTL | Path |
 |---|---|---|
-| Default (dynamic) | 0s (pass-through) | `/*` |
+| Default (no cache) | 0s min/default/max — always pass-through | `/*` |
 | Static stylesheets | 1h min / 24h default / 7d max | `/stylesheets/*` |
 | Static images | 1h min / 24h default / 7d max | `/images/*` |
+| CSS files | 1h min / 24h default / 7d max | `*.css` |
 
 **Configuration:**
 - Origin: ALB (HTTP only, CloudFront handles HTTPS termination)

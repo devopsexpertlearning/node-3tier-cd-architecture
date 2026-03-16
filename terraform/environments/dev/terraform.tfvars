@@ -223,7 +223,7 @@ albs = {
 cloudfront_distributions = {
   web-api = {
     alb_key                        = "web-api-alb"
-    default_cache_ttl              = { default = 0, max = 86400, min = 0 }
+    default_cache_ttl              = { default = 0, max = 0, min = 0 }
     default_viewer_protocol_policy = "redirect-to-https"
     enabled                        = true
     is_ipv6_enabled                = true
@@ -236,7 +236,7 @@ cloudfront_distributions = {
         default_ttl            = 86400
         max_ttl                = 604800
         min_ttl                = 3600
-        path_pattern           = "/stylesheets/*"
+        path_pattern           = "/*.css"
         viewer_protocol_policy = "redirect-to-https"
       },
       {
@@ -244,6 +244,13 @@ cloudfront_distributions = {
         max_ttl                = 604800
         min_ttl                = 3600
         path_pattern           = "/images/*"
+        viewer_protocol_policy = "redirect-to-https"
+      },
+      {
+        default_ttl            = 86400
+        max_ttl                = 604800
+        min_ttl                = 3600
+        path_pattern           = "*.css"
         viewer_protocol_policy = "redirect-to-https"
       }
     ]
