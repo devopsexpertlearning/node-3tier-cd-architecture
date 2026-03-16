@@ -23,10 +23,13 @@ spec:
     spec:
       containers:
       - name: api
-        # Tag will be injected by the CI/CD pipeline
-        image: ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${ENV}-api:${IMAGE_TAG}
+        # Image name matched by kustomize overlay for tag injection
+        image: api:latest
         ports:
         - containerPort: 3001
+        envFrom:
+        - configMapRef:
+            name: app-config
         env:
         - name: DBHOST
           valueFrom:
@@ -48,10 +51,6 @@ spec:
             secretKeyRef:
               name: db-credentials
               key: dbname
-        - name: DBPORT
-          value: "5432"
-        - name: DBSSL
-          value: "true"
         # Health checks for fault tolerance
         readinessProbe:
           httpGet:

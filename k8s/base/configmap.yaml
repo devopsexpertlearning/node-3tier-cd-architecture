@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: node-3tier-app
+data:
+  # API configuration
+  DBPORT: "5432"
+  DBSSL: "true"
+
+  # Web configuration
+  API_HOST: "http://api-service.node-3tier-app.svc.cluster.local:3001"

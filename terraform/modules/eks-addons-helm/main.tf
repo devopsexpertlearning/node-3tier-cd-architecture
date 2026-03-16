@@ -9,7 +9,13 @@ locals {
 # Initialize required Helm repositories before installing charts
 resource "null_resource" "helm_repos" {
   provisioner "local-exec" {
-    command = "helm repo add --force-update vmware-tanzu https://vmware-tanzu.github.io/helm-charts && helm repo add --force-update bitnami https://charts.bitnami.com/bitnami && helm repo update"
+    command = join(" && ", [
+      "helm repo add --force-update vmware-tanzu https://vmware-tanzu.github.io/helm-charts",
+      "helm repo add --force-update metrics-server https://kubernetes-sigs.github.io/metrics-server",
+      "helm repo add --force-update eks https://aws.github.io/eks-charts",
+      "helm repo add --force-update open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts",
+      "helm repo update"
+    ])
   }
 }
 
@@ -28,7 +34,7 @@ resource "helm_release" "envoy_gateway" {
   values = var.envoy_gateway_custom_values != "" ? [var.envoy_gateway_custom_values] : []
 
   lifecycle {
-    ignore_changes = [version, values]
+    ignore_changes = [values]
   }
 
   depends_on = [null_resource.helm_repos]
@@ -55,7 +61,7 @@ resource "helm_release" "metrics_server" {
   })]
 
   lifecycle {
-    ignore_changes = [version, values]
+    ignore_changes = [values]
   }
 
   depends_on = [null_resource.helm_repos]
@@ -117,7 +123,7 @@ resource "helm_release" "velero" {
   })]
 
   lifecycle {
-    ignore_changes = [version, values]
+    ignore_changes = [values]
   }
 
   depends_on = [null_resource.helm_repos]
@@ -150,7 +156,7 @@ resource "helm_release" "alb_controller" {
   })]
 
   lifecycle {
-    ignore_changes = [version, values]
+    ignore_changes = [values]
   }
 
   depends_on = [null_resource.helm_repos]
@@ -346,7 +352,7 @@ resource "helm_release" "adot_collector" {
   })]
 
   lifecycle {
-    ignore_changes = [version, values]
+    ignore_changes = [values]
   }
 
   depends_on = [null_resource.helm_repos]

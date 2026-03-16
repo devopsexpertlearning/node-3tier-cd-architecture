@@ -1,6 +1,5 @@
 # Horizontal Pod Autoscaling (HPA) for Web and API tiers
-# Scales pods based on CPU and Memory utilization
-
+# Scales pods based on CPU utilization
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

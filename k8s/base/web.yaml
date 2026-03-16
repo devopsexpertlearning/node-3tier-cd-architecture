@@ -23,14 +23,13 @@ spec:
     spec:
       containers:
       - name: web
-        # Tag will be injected by the CI/CD pipeline
-        image: ${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${PROJECT_NAME}-${ENV}-web:${IMAGE_TAG}
+        # Image name matched by kustomize overlay for tag injection
+        image: web:latest
         ports:
         - containerPort: 3000
-        env:
-        - name: API_HOST
-          # Internal Kubernetes DNS routing to the API service
-          value: "http://api-service.node-3tier-app.svc.cluster.local:3001"
+        envFrom:
+        - configMapRef:
+            name: app-config
         readinessProbe:
           httpGet:
             path: /

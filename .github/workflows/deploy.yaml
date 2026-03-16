@@ -294,7 +294,7 @@ jobs:
         run: aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region ${{ vars.AWS_REGION }}
 
       - name: Create namespace
-        run: kubectl apply -f k8s/01-namespace.yaml
+        run: kubectl apply -f k8s/base/namespace.yaml
 
       - name: Sync db-credentials from AWS Secrets Manager
         run: |
@@ -313,41 +313,64 @@ jobs:
       - name: Run DB init job
         run: |
           kubectl delete job db-init -n node-3tier-app --ignore-not-found=true
-          kubectl apply -f k8s/06-db-init.yaml
+          kubectl apply -f k8s/jobs/db-init.yaml
           kubectl wait --for=condition=complete job/db-init \
             -n node-3tier-app --timeout=300s
 
       - name: Deploy app manifests
         run: |
-          sudo apt-get install -y gettext-base
-
-          export AWS_REGION=${{ vars.AWS_REGION }}
-          export ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
-          export PROJECT_NAME=${{ vars.PROJECT_NAME }}
-          export ENV=${{ vars.ENV }}
-          export IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
+          ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+          IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
 
           # Fetch target group ARNs dynamically from AWS
-          export TG_ARN_WEB=$(aws elbv2 describe-target-groups \
+          TG_ARN_WEB=$(aws elbv2 describe-target-groups \
             --region ${{ vars.AWS_REGION }} \
             --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-web'].TargetGroupArn" \
             --output text)
-          export TG_ARN_API=$(aws elbv2 describe-target-groups \
+          TG_ARN_API=$(aws elbv2 describe-target-groups \
             --region ${{ vars.AWS_REGION }} \
             --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-api'].TargetGroupArn" \
             --output text)
           echo "TG_ARN_WEB=${TG_ARN_WEB}"
           echo "TG_ARN_API=${TG_ARN_API}"
 
-          mkdir -p .k8s-processed
-          for file in k8s/*.yaml; do
-            name=$(basename $file)
-            [[ "$name" == "01-namespace.yaml" || "$name" == "06-db-init.yaml" ]] && continue
-            envsubst '${AWS_REGION} ${ACCOUNT_ID} ${PROJECT_NAME} ${ENV} ${IMAGE_TAG} ${TG_ARN_WEB} ${TG_ARN_API}' \
-              < "$file" > ".k8s-processed/$name"
-          done
+          # Generate tgb.yaml with real ARNs into the overlay
+          cat > k8s/overlays/dev/tgb.yaml << EOF
+          apiVersion: elbv2.k8s.aws/v1beta1
+          kind: TargetGroupBinding
+          metadata:
+            name: web-tgb
+            namespace: node-3tier-app
+          spec:
+            serviceRef:
+              name: web-service
+              port: 3000
+            targetGroupARN: ${TG_ARN_WEB}
+            targetType: ip
+          ---
+          apiVersion: elbv2.k8s.aws/v1beta1
+          kind: TargetGroupBinding
+          metadata:
+            name: api-tgb
+            namespace: node-3tier-app
+          spec:
+            serviceRef:
+              name: api-service
+              port: 3001
+            targetGroupARN: ${TG_ARN_API}
+            targetType: ip
+          EOF
 
-          kubectl apply -f .k8s-processed/
+          # Set image tags in the overlay kustomization
+          cd k8s/overlays/dev
+          kustomize edit set image \
+            api=${ECR_REGISTRY}/${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-api:${IMAGE_TAG}
+          kustomize edit set image \
+            web=${ECR_REGISTRY}/${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-web:${IMAGE_TAG}
+          cd -
+
+          # Apply everything via kustomize
+          kubectl apply -k k8s/overlays/dev/
 
       - name: Verify Web rollout
         run: kubectl rollout status deployment/web-deployment -n node-3tier-app --timeout=300s
