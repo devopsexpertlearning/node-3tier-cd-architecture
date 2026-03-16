@@ -88,6 +88,18 @@ variable "static_cache_behaviors" {
   ]
 }
 
+variable "aliases" {
+  description = "Alternate domain names (CNAMEs) for the CloudFront distribution"
+  type        = list(string)
+  default     = []
+}
+
+variable "certificate_arn" {
+  description = "ACM certificate ARN for custom domain (must be in us-east-1). If empty, uses CloudFront default certificate."
+  type        = string
+  default     = ""
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

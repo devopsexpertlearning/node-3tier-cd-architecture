@@ -14,6 +14,12 @@ locals {
     0,
     min(length("${var.project_name}-${var.environment}"), 20)
   )
+
+  # Key of the forward listener (non-redirect) — used for path routing rules
+  forward_listener_key = [
+    for k, v in var.listeners : k
+    if !try(v.redirect_to_https, false)
+  ][0]
 }
 
 # Application Load Balancer
@@ -67,15 +73,33 @@ resource "aws_lb_target_group" "this" {
   })
 }
 
-# Default Listener — forwards to the target group marked default = true
-resource "aws_lb_listener" "http" {
-  load_balancer_arn = aws_lb.main.arn
-  port              = var.listener_port
-  protocol          = var.listener_protocol
+# Listeners — HTTP redirect and/or HTTPS forward
+resource "aws_lb_listener" "this" {
+  for_each = var.listeners
 
-  default_action {
-    type             = "forward"
-    target_group_arn = aws_lb_target_group.this[var.default_target_group].arn
+  load_balancer_arn = aws_lb.main.arn
+  port              = each.value.port
+  protocol          = each.value.protocol
+  certificate_arn   = try(each.value.certificate_arn, null)
+
+  dynamic "default_action" {
+    for_each = try(each.value.redirect_to_https, false) ? [1] : []
+    content {
+      type = "redirect"
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = try(each.value.redirect_to_https, false) ? [] : [1]
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.this[var.default_target_group].arn
+    }
   }
 
   tags = local.common_tags
@@ -88,7 +112,7 @@ resource "aws_lb_listener_rule" "path_routing" {
     if try(v.path_patterns, null) != null && k != var.default_target_group
   }
 
-  listener_arn = aws_lb_listener.http.arn
+  listener_arn = aws_lb_listener.this[local.forward_listener_key].arn
   priority     = try(each.value.priority, 100)
 
   action {

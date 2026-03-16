@@ -19,6 +19,7 @@ output "target_group_arns" {
   value       = { for k, v in aws_lb_target_group.this : k => v.arn }
 }
 
-output "http_listener_arn" {
-  value = aws_lb_listener.http.arn
+output "listener_arns" {
+  description = "Map of listener keys to their ARNs"
+  value       = { for k, v in aws_lb_listener.this : k => v.arn }
 }

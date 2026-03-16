@@ -56,16 +56,27 @@ variable "idle_timeout" {
   default     = 60
 }
 
-variable "listener_port" {
-  description = "Port for the default ALB listener"
-  type        = number
-  default     = 80
-}
-
-variable "listener_protocol" {
-  description = "Protocol for the default ALB listener"
-  type        = string
-  default     = "HTTP"
+variable "listeners" {
+  description = <<-EOT
+    Map of listeners to create on this ALB.
+    Each key is a logical name (e.g. "http", "https").
+    - port             : listener port (required)
+    - protocol         : HTTP or HTTPS (required)
+    - redirect_to_https: if true, listener redirects HTTP → HTTPS 301 (optional)
+    - certificate_arn  : ACM certificate ARN, required when protocol = HTTPS
+    Example:
+      listeners = {
+        http  = { port = 80,  protocol = "HTTP",  redirect_to_https = true }
+        https = { port = 443, protocol = "HTTPS", certificate_arn = "arn:aws:acm:..." }
+      }
+  EOT
+  type        = any
+  default = {
+    http = {
+      port     = 80
+      protocol = "HTTP"
+    }
+  }
 }
 
 variable "default_target_group" {

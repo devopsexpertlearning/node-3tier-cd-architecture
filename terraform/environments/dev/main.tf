@@ -33,6 +33,7 @@ resource "random_string" "s3_suffix" {
 }
 
 data "aws_elb_service_account" "main" {}
+data "aws_caller_identity" "current" {}
 
 resource "aws_s3_bucket_policy" "alb_logs" {
   for_each = local.s3_buckets
@@ -288,9 +289,15 @@ module "alb" {
   enable_deletion_protection = each.value.enable_deletion_protection
   enable_http2               = each.value.enable_http2
   idle_timeout               = each.value.idle_timeout
-  listener_port              = each.value.listener_port
-  listener_protocol          = each.value.listener_protocol
-  default_target_group       = each.value.default_target_group
+  listeners = {
+    for k, v in each.value.listeners : k => merge(
+      { for kk, vv in v : kk => vv if kk != "certificate_id" },
+      try(v.certificate_id, null) != null ? {
+        certificate_arn = "arn:aws:acm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:certificate/${v.certificate_id}"
+      } : {}
+    )
+  }
+  default_target_group = each.value.default_target_group
 
   target_groups = each.value.target_groups
   tags          = var.tags
@@ -313,6 +320,10 @@ module "cloudfront" {
   default_viewer_protocol_policy = each.value.default_viewer_protocol_policy
   default_cache_ttl              = each.value.default_cache_ttl
   static_cache_behaviors         = each.value.static_cache_behaviors
+  aliases                        = try(each.value.aliases, [])
+
+  # CloudFront ACM certs must be in us-east-1 regardless of deployment region
+  certificate_arn = try(each.value.certificate_id, "") != "" ? "arn:aws:acm:us-east-1:${data.aws_caller_identity.current.account_id}:certificate/${each.value.certificate_id}" : ""
 
   tags = var.tags
 }

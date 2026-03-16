@@ -17,6 +17,7 @@ resource "aws_cloudfront_distribution" "main" {
   default_root_object = ""
   price_class         = var.price_class
   wait_for_deployment = var.wait_for_deployment
+  aliases             = var.aliases
 
   origin {
     domain_name = var.alb_dns_name
@@ -83,7 +84,10 @@ resource "aws_cloudfront_distribution" "main" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.certificate_arn == "" ? true : null
+    acm_certificate_arn            = var.certificate_arn != "" ? var.certificate_arn : null
+    ssl_support_method             = var.certificate_arn != "" ? "sni-only" : null
+    minimum_protocol_version       = var.certificate_arn != "" ? "TLSv1.2_2021" : null
   }
 
   tags = merge(local.common_tags, {

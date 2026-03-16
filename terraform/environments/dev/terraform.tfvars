@@ -190,10 +190,20 @@ albs = {
     enable_http2               = true
     idle_timeout               = 60
     internal                   = false
-    listener_port              = 80
-    listener_protocol          = "HTTP"
     logs_bucket_key            = "alb-logs"
     security_group_key         = "web-api-alb"
+    listeners = {
+      http = {
+        port              = 80
+        protocol          = "HTTP"
+        redirect_to_https = true
+      }
+      https = {
+        port           = 443
+        protocol       = "HTTPS"
+        certificate_id = "2dc67818-4396-488d-b14d-e2e1124b6bfb"
+      }
+    }
     target_groups = {
       web = {
         health_check = {
@@ -217,8 +227,10 @@ cloudfront_distributions = {
     default_viewer_protocol_policy = "redirect-to-https"
     enabled                        = true
     is_ipv6_enabled                = true
-    origin_protocol_policy         = "http-only"
+    origin_protocol_policy         = "https-only"
     price_class                    = "PriceClass_100"
+    aliases                        = ["samplesite.devopsexpert.work.gd"]
+    certificate_id                 = "2dc67818-4396-488d-b14d-e2e1124b6bfb"
     static_cache_behaviors = [
       {
         default_ttl            = 86400
