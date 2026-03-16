@@ -122,7 +122,7 @@ Application Load Balancer (public subnets)
          │
 ┌────────────────┐
 │  CloudFront    │  ← Global CDN (PriceClass_100)
-│  Distribution  │    Static assets cached (stylesheets, images)
+│  Distribution  │    Static assets cached (images, CSS files)
 │                │    Dynamic content pass-through (TTL=0)
 └────────────────┘
          ▲
@@ -143,7 +143,7 @@ Application Load Balancer (public subnets)
 | **Orchestration** | Kubernetes on AWS EKS (Fargate) |
 | **Ingress** | AWS ALB + AWS Load Balancer Controller + TargetGroupBinding |
 | **K8s Manifests** | Kustomize (base + overlays/dev) |
-| **IaC** | Terraform >= 1.10 with modular design |
+| **IaC** | Terraform ~1.12 with modular design |
 | **CI/CD** | GitHub Actions |
 | **Image Registry** | Amazon ECR |
 | **Image Security** | Trivy vulnerability scanning (CRITICAL gate) |
@@ -157,7 +157,7 @@ Application Load Balancer (public subnets)
 
 ## Infrastructure Components
 
-All infrastructure is provisioned via Terraform (`terraform/environments/dev/`). The architecture uses **13 Terraform modules**:
+All infrastructure is provisioned via Terraform (`terraform/environments/dev/`). The architecture uses **12 Terraform modules**:
 
 ### Modules
 
@@ -192,34 +192,44 @@ Two independent GitHub Actions workflows handle infrastructure and application d
 
 ### 1. Terraform Pipeline (`.github/workflows/terraform.yaml`)
 
-Triggers on changes to `terraform/environments/dev/**`:
+Triggers on changes to `terraform/environments/dev/**`. Also runs on a schedule for drift detection.
 
 ```
 Push/PR to main
        │
        ▼
-  ┌─────────┐
-  │VALIDATE │  terraform fmt, init, validate
-  └────┬────┘
+  ┌──────────┐
+  │ VALIDATE │  terraform fmt, init, validate
+  └────┬─────┘
        │
        ▼
-  ┌─────────┐
-  │  PLAN   │  terraform plan → artifact + S3 audit trail
-  └────┬────┘       (savedplan/environments/dev/tfplan-{date-time})
-       │
+  ┌──────────┐
+  │   PLAN   │  terraform plan → artifact + S3 audit trail
+  └────┬─────┘  (savedplan/environments/dev/tfplan-{date-time})
+       │        PR comments show full plan output (60KB guard)
        ▼ (push to main only)
-  ┌─────────┐
-  │  APPLY  │  ← GitHub Environment approval gate (environment: dev)
-  └─────────┘  Downloads exact plan from S3 → terraform apply
+  ┌──────────┐
+  │  APPLY   │  ← GitHub Environment approval gate (environment: dev)
+  └──────────┘  Downloads exact plan from S3 → terraform apply
+
+Scheduled (cron)
+       │
+       ▼
+  ┌──────────────┐
+  │    DRIFT     │  terraform plan -detailed-exitcode
+  │  DETECTION   │  Opens/updates GitHub issue on drift
+  └──────────────┘  Closes issue automatically when drift resolves
 ```
 
 **Enterprise features:**
+- Terraform version `~1.12`
 - Plan binary saved to S3 for audit: `s3://devopsexpert-shared/savedplan/environments/dev/tfplan-{timestamp}`
 - Apply downloads the exact approved plan — prevents plan/apply race condition
 - S3 metadata tagged with `run_id`, `sha`, `actor`, `apply_outcome`, `applied_at`
 - Manual approval gate via GitHub Environment protection rules
 - PR comments show full plan output (60KB truncation guard)
 - Concurrency lock prevents concurrent Terraform runs (no state corruption)
+- Scheduled drift detection auto-creates GitHub issues when AWS diverges from Terraform state
 
 ### 2. Application Deploy Pipeline (`.github/workflows/deploy.yaml`)
 
@@ -383,15 +393,17 @@ Alarm notifications sent to SNS → email (`alarm_email` in tfvars).
 
 AWS **CloudFront** distribution sits in front of the ALB:
 
-| Behavior | Cache TTL | Path |
-|---|---|---|
-| Default (no cache) | 0s min/default/max — always pass-through | `/*` |
-| Static stylesheets | 1h min / 24h default / 7d max | `/stylesheets/*` |
-| Static images | 1h min / 24h default / 7d max | `/images/*` |
-| CSS files | 1h min / 24h default / 7d max | `*.css` |
+| Behavior | Cache TTL | Path | Headers forwarded |
+|---|---|---|---|
+| Default (no cache) | 0s min/default/max — always pass-through | `/*` | `Host`, `Origin`, `Referer` |
+| CSS files (root) | 1h min / 24h default / 7d max | `/*.css` | `Host`, `Origin`, `Referer` |
+| Static images | 1h min / 24h default / 7d max | `/images/*` | `Host`, `Origin`, `Referer` |
+| CSS files (any) | 1h min / 24h default / 7d max | `*.css` | `Host`, `Origin`, `Referer` |
 
 **Configuration:**
-- Origin: ALB (HTTP only, CloudFront handles HTTPS termination)
+- Origin: ALB DNS (`https-only`) with custom ACM certificate (`samplesite.devopsexpert.work.gd`)
+- `Host` header forwarded on all behaviors — ensures correct SNI for HTTPS origin connections
+- Alternate domain name: `samplesite.devopsexpert.work.gd`
 - Viewer protocol: redirect HTTP → HTTPS
 - IPv6: enabled
 - Price class: `PriceClass_100` (US, Canada, Europe — lowest latency to most users)
@@ -543,13 +555,13 @@ WEB_PORT=3000
 ├── terraform/
 │   ├── environments/
 │   │   └── dev/
-│   │       ├── main.tf          # Orchestrates all 13 modules
+│   │       ├── main.tf          # Orchestrates all 12 modules
 │   │       ├── variables.tf
 │   │       ├── terraform.tfvars # Dev environment values
 │   │       ├── providers.tf
 │   │       ├── backend.tf       # Remote state: S3 + DynamoDB
 │   │       ├── outputs.tf
-│   │       └── versions.tf      # TF >= 1.10, AWS ~5.0
+│   │       └── versions.tf      # TF ~1.12, AWS ~5.0
 │   └── modules/
 │       ├── vpc/
 │       ├── security-groups/
@@ -594,10 +606,9 @@ WEB_PORT=3000
 | Variable | Example Value |
 |---|---|
 | `AWS_REGION` | `us-east-1` |
-| `ECR_REPOSITORY_API` | `api` |
-| `ECR_REPOSITORY_WEB` | `web` |
 | `EKS_CLUSTER_NAME` | `node-3tier-dev` |
 | `PROJECT_NAME` | `node-3tier` |
+| `ENV` | `dev` |
 | `RDS_SECRET_NAME` | `node-3tier-appdb-dev-rds-creds-none` (get exact name: `aws secretsmanager list-secrets --region us-east-1 --query "SecretList[?contains(Name, 'node-3tier')].Name" --output table`) |
 
 ### Environment Variables (Settings → Environments → dev)
@@ -747,7 +758,7 @@ kubectl delete pod pg-test -n node-3tier-app
 | Web exposed to internet | ✅ | ALB (public subnets) → CloudFront |
 | API internal only | ✅ | ClusterIP service, no ALB TG, cluster DNS only |
 | DB not accessible from internet | ✅ | RDS in private subnets, SG allows only EKS pod SG |
-| IaC for all resources | ✅ | Terraform 13 modules, all resources defined |
+| IaC for all resources | ✅ | Terraform 12 modules, all resources defined |
 | Handle server failures | ✅ | EKS Fargate (managed), HPA min 2 replicas |
 | Zero-downtime updates | ✅ | RollingUpdate maxUnavailable=0, rollback on failure |
 | Fully automated deployment | ✅ | GitHub Actions 5-stage pipeline |
