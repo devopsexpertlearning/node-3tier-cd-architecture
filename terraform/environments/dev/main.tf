@@ -320,7 +320,7 @@ module "cloudfront" {
   default_viewer_protocol_policy = each.value.default_viewer_protocol_policy
   default_cache_ttl              = each.value.default_cache_ttl
   static_cache_behaviors         = each.value.static_cache_behaviors
-  aliases         = try(each.value.aliases, [])
+  aliases                        = try(each.value.aliases, [])
 
   # CloudFront ACM certs must be in us-east-1 regardless of deployment region
   certificate_arn = try(each.value.certificate_id, "") != "" ? "arn:aws:acm:us-east-1:${data.aws_caller_identity.current.account_id}:certificate/${each.value.certificate_id}" : ""
