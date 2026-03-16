@@ -1,10 +1,12 @@
 #!/bin/bash
 set -e
 
-# ==============================================================================
 # Runtime Script: scale.sh
-# ==============================================================================
-# Manually scales a deployment bypassing the HPA bounds for emergency scenarios.
+# Manually scales a deployment for emergency scenarios.
+# Temporarily suspends the HPA, scales to the requested replica count,
+# then restores the HPA so autoscaling resumes automatically.
+
+NAMESPACE="node-3tier-app"
 
 if [ -z "$1" ] || [ -z "$2" ]; then
   echo "Usage: ./scale.sh <tier> <replicas>"
@@ -20,15 +22,24 @@ if [ "$TIER" != "web" ] && [ "$TIER" != "api" ]; then
   exit 1
 fi
 
+HPA_NAME="${TIER}-hpa"
+DEPLOY_NAME="${TIER}-deployment"
+
 echo "Scaling the ${TIER} deployment to ${REPLICAS} replicas..."
 
-# 1. We must pause/remove the HPA temporarily so it doesn't fight our manual scaling
-echo "Suspending HPA for ${TIER}..."
-kubectl delete hpa ${TIER}-hpa -n node-3tier-app --ignore-not-found
+# 1. Suspend the HPA so it doesn't fight the manual scale
+echo "Suspending HPA ${HPA_NAME}..."
+kubectl patch hpa "${HPA_NAME}" -n "${NAMESPACE}" \
+  -p '{"spec":{"minReplicas":'"${REPLICAS}"',"maxReplicas":'"${REPLICAS}"'}}'
 
-# 2. Scale the deployment explicitly
-kubectl scale deployment ${TIER}-deployment --replicas=${REPLICAS} -n node-3tier-app
+# 2. Scale the deployment
+kubectl scale deployment "${DEPLOY_NAME}" --replicas="${REPLICAS}" -n "${NAMESPACE}"
 
 echo ""
-echo "Scale command executed. Current pods:"
-kubectl get pods -l app=${TIER} -n node-3tier-app
+echo "Scaled to ${REPLICAS}. Current pods:"
+kubectl get pods -l "app=${TIER}" -n "${NAMESPACE}"
+
+echo ""
+echo "NOTE: HPA is patched to fixed replicas=${REPLICAS}."
+echo "To restore autoscaling (2-10 replicas), run:"
+echo "  kubectl patch hpa ${HPA_NAME} -n ${NAMESPACE} -p '{\"spec\":{\"minReplicas\":2,\"maxReplicas\":10}}'"

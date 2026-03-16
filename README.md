@@ -664,10 +664,11 @@ Push changes to `main` branch in any of these paths:
 
 | Script | Usage | Description |
 |---|---|---|
-| `scripts/start.sh` | `./start.sh` | Apply all k8s manifests, wait for pod readiness |
+| `scripts/start.sh` | `./start.sh` | Apply all k8s manifests via Kustomize, wait for pod readiness |
 | `scripts/deploy.sh` | `./deploy.sh <api\|web>` | Trigger rolling restart for a tier |
-| `scripts/scale.sh` | `./scale.sh <api\|web> <n>` | Scale to `n` replicas (temporarily removes HPA) |
+| `scripts/scale.sh` | `./scale.sh <api\|web> <n>` | Patch HPA to fixed `n` replicas; prints restore command |
 | `scripts/stop.sh` | `./stop.sh` | Delete all application k8s resources |
+| `scripts/backup.sh` | `./backup.sh <create\|list\|status\|restore\|rds-snapshots>` | On-demand Velero backup/restore + RDS snapshot listing |
 
 ---
 
