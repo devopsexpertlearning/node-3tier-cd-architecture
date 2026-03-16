@@ -37,10 +37,31 @@ resource "aws_iam_role_policy_attachment" "eks_vpc_resource_controller" {
 }
 
 # Fargate Pod Execution IAM Role
+# When eks_oidc_provider_arn is provided (iam_irsa module call), the trust policy
+# uses OIDC/AssumeRoleWithWebIdentity so ADOT and Velero can assume it via IRSA.
+# When called without OIDC vars (plain iam module call), it uses the standard
+# Fargate execution trust (eks-fargate-pods.amazonaws.com / AssumeRole).
 resource "aws_iam_role" "fargate_pod_execution" {
   name = "${var.project_name}-${var.environment}-fargate-pod-execution-role"
 
-  assume_role_policy = jsonencode({
+  assume_role_policy = var.eks_oidc_provider_arn != "" ? jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Effect = "Allow"
+      Principal = {
+        Federated = var.eks_oidc_provider_arn
+      }
+      Condition = {
+        StringLike = {
+          "${var.eks_oidc_provider_url}:sub" = [
+            "system:serviceaccount:opentelemetry:adot-collector",
+            "system:serviceaccount:velero:velero"
+          ]
+        }
+      }
+    }]
+    }) : jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Action = "sts:AssumeRole"

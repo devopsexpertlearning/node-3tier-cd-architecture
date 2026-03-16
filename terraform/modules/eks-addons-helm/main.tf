@@ -54,9 +54,14 @@ resource "helm_release" "metrics_server" {
   timeout          = 300
 
   values = [yamlencode({
+    # EKS Fargate fix: default port 10250 conflicts with the Fargate kubelet
+    # because pod IP = node IP on Fargate. Use 4443 so the kube-apiserver
+    # discovery check reaches metrics-server instead of the kubelet.
+    containerPort = 4443
     args = [
       "--kubelet-insecure-tls",
-      "--kubelet-preferred-address-types=InternalIP"
+      "--kubelet-preferred-address-types=InternalIP",
+      "--secure-port=4443"
     ]
   })]
 
