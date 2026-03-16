@@ -19,9 +19,7 @@ concurrency:
 env:
   IMAGE_TAG: ${{ github.run_id }}-${{ github.sha && github.sha || '' }}
 
-# ─────────────────────────────────────────────────────────────────────────────
 # STAGE 1 — TEST
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   test:
     name: "[1] Unit Tests"
@@ -51,9 +49,7 @@ jobs:
           npm ci
           npm test --if-present
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STAGE 2 — BUILD  (api + web in parallel, save image as tar artifact)
-# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 2 — BUILD
   build-api:
     name: "[2] Build API"
     needs: test
@@ -149,9 +145,7 @@ jobs:
           path: /tmp/web.tar
           retention-days: 1
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STAGE 3 — SCAN  (api + web in parallel, scan from tar — never pushed yet)
-# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 3 — SCAN
   scan-api:
     name: "[3] Scan API"
     needs: build-api
@@ -193,9 +187,7 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STAGE 4 — PUSH  (api + web in parallel, only after clean scan)
-# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 4 — PUSH
   push-api:
     name: "[4] Push API"
     needs: scan-api
@@ -262,9 +254,7 @@ jobs:
           docker load --input /tmp/web.tar
           docker push ${{ steps.login-ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_WEB }}:${{ steps.meta.outputs.image_tag }}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STAGE 5 — DEPLOY  (only after both images are pushed)
-# ─────────────────────────────────────────────────────────────────────────────
+# STAGE 5 — DEPLOY
   deploy:
     name: "[5] Deploy to EKS"
     needs: [push-api, push-web]

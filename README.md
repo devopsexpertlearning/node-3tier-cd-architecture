@@ -39,21 +39,26 @@ CloudFront (CDN)
     ▼
 Application Load Balancer (public subnets)
     │
-    ├──► /api/*  ──► API Service  ──► EKS Fargate Pod (api-deployment)
-    │                                        │
-    └──► /*      ──► Web Service  ──► EKS Fargate Pod (web-deployment)
-                                             │
+    └──► /*  ──► Web Service  ──► EKS Fargate Pod (web-deployment)
+                                        │
+                                        │ internal cluster DNS
+                                        ▼
+                               EKS Fargate Pod (api-deployment)
+                                        │
                                   Private Subnet
-                                             │
-                                             ▼
-                                  RDS PostgreSQL (private subnets, no internet access)
+                                        │
+                                        ▼
+                               RDS PostgreSQL (private subnets, no internet access)
 ```
+
+> **API is internal only.** The web tier calls the API via cluster-internal DNS (`http://api-service.node-3tier-app.svc.cluster.local:3001`). The API is never exposed to the internet or the ALB — only the web service has an ALB target group binding.
 
 **Key design decisions:**
 
 | Requirement | Implementation |
 |---|---|
-| Web + API exposed to internet | ALB (public subnets) → CloudFront CDN |
+| Web exposed to internet | ALB (public subnets) → CloudFront CDN |
+| API internal only | ClusterIP service, reachable only from web pods via cluster DNS |
 | DB not accessible from internet | RDS in private subnets, SG allows only EKS pod SG |
 | Handle server failures | EKS Fargate (managed nodes) + HPA (min 2 replicas) |
 | Zero-downtime updates | RollingUpdate strategy (maxUnavailable=0), rollback on failure |
@@ -83,13 +88,15 @@ Application Load Balancer (public subnets)
 │   │  │  ┌────────────────────┐  │  │  ┌───────────────────┐  │ │   │
 │   │  │  │  ALB               │  │  │  │  EKS Fargate      │  │ │   │
 │   │  │  │  (web-api-alb)     │  │  │  │  ┌─────────────┐  │  │ │   │
-│   │  │  │  Port 80/443       │  │  │  │  │ api-deploy  │  │  │ │   │
-│   │  │  │  /api/* → api:3001 │──┼──┼──┤  │ (2-10 pods) │  │  │ │   │
-│   │  │  │  /* → web:3000     │  │  │  │  └─────────────┘  │  │ │   │
-│   │  │  └────────────────────┘  │  │  │  ┌─────────────┐  │  │ │   │
-│   │  │                          │  │  │  │ web-deploy  │  │  │ │   │
-│   │  │  ┌────────────────────┐  │  │  │  │ (2-10 pods) │  │  │ │   │
-│   │  │  │  NAT Gateway       │  │  │  │  └─────────────┘  │  │ │   │
+│   │  │  │  Port 80           │  │  │  │  │ web-deploy  │  │  │ │   │
+│   │  │  │  /* → web:3000     │──┼──┼──►  │ (2-10 pods) │  │  │ │   │
+│   │  │  └────────────────────┘  │  │  │  └──────┬──────┘  │  │ │   │
+│   │  │                          │  │  │  internal│DNS      │  │ │   │
+│   │  │  ┌────────────────────┐  │  │  │         ▼         │  │ │   │
+│   │  │  │  NAT Gateway       │  │  │  │  ┌─────────────┐  │  │ │   │
+│   │  │  └────────────────────┘  │  │  │  │ api-deploy  │  │  │ │   │
+│   │  │                          │  │  │  │ (2-10 pods) │  │  │ │   │
+│   │  │                          │  │  │  └─────────────┘  │  │ │   │
 │   │  │  └────────────────────┘  │  │  └───────────────────┘  │ │   │
 │   │  └──────────────────────────┘  │                         │ │   │
 │   │                                │  ┌───────────────────┐  │ │   │
@@ -132,7 +139,8 @@ Application Load Balancer (public subnets)
 | **Database** | PostgreSQL 17 (RDS managed) |
 | **Containers** | Docker (node:24-alpine multi-stage builds) |
 | **Orchestration** | Kubernetes on AWS EKS (Fargate) |
-| **Ingress** | Envoy Gateway (HTTPRoute) + AWS ALB |
+| **Ingress** | AWS ALB + AWS Load Balancer Controller + TargetGroupBinding |
+| **K8s Manifests** | Kustomize (base + overlays/dev) |
 | **IaC** | Terraform >= 1.10 with modular design |
 | **CI/CD** | GitHub Actions |
 | **Image Registry** | Amazon ECR |
@@ -158,11 +166,11 @@ All infrastructure is provisioned via Terraform (`terraform/environments/dev/`).
 | `iam` | IAM roles for EKS, Fargate execution, IRSA, ALB controller |
 | `eks` | EKS cluster (1.33), OIDC provider for IRSA |
 | `fargate-profile` | Fargate profiles: k8s-core, web-api, k8s-logs-monitoring |
-| `eks-addons-helm` | Metrics Server, Envoy Gateway, Velero, ADOT collector |
+| `eks-addons-helm` | Metrics Server, Velero, ADOT collector, AWS Load Balancer Controller |
 | `ecr` | ECR repositories (api, web) with time-based lifecycle policy (1 day dev) |
 | `s3` | S3 buckets: ALB access logs, Velero backups, Terraform state |
 | `rds` | PostgreSQL 17 RDS with encryption, automated backups, Secrets Manager |
-| `alb` | ALB with target groups for web (port 3000) and api (port 3001) |
+| `alb` | ALB with web target group only (port 3000); API is internal |
 | `cloudfront` | CloudFront CDN with static asset caching behaviors |
 | `cloudwatch` | CloudWatch log groups, RDS/ALB alarms, SNS notifications |
 
@@ -245,7 +253,7 @@ Push to main
                   ▼
            ┌───────────┐
            │[5] DEPLOY │  kubeconfig → db-credentials sync → db-init job
-           │  to EKS   │  → envsubst manifests → kubectl apply
+           │  to EKS   │  → kustomize set image → kubectl apply -k
            └─────┬─────┘  → rollout verify → rollback on failure
 ```
 
@@ -266,16 +274,23 @@ Push to main
 ### Network Security
 
 ```
-Internet → CloudFront → ALB (public subnets, SG: 80/443 open)
-                         │
-                    EKS Pods (private subnets, SG: VPC CIDR only)
-                         │
-                    RDS (private subnets, SG: EKS pod SG only, port 5432)
+Internet → CloudFront → ALB SG (80 open)
+                         │ port 3000 only
+                         ▼
+                    EKS cluster SG (Fargate pods — web)
+                         │ cluster-internal DNS
+                         ▼
+                    EKS cluster SG (Fargate pods — api)
+                         │ port 5432 only
+                         ▼
+                    RDS SG (private subnets, EKS cluster SG only)
 ```
 
-- RDS has **no public IP** and **no internet gateway route**
-- EKS pods run in private subnets, outbound via NAT Gateway
-- Security groups enforce least-privilege traffic rules
+- ALB SG → EKS cluster SG ingress on **port 3000 only** (web pods)
+- API pods are not reachable from ALB or internet — cluster-internal only
+- RDS SG allows ingress only from `module.eks.cluster_security_group_id` (the auto-created Fargate SG), not from any manually managed SG
+- EKS Fargate pods use the **auto-created cluster SG** (`cluster_security_group_id`), not additional SGs passed in `vpc_config`
+- All pods run in private subnets, outbound via NAT Gateway
 
 ### Secret Management
 
@@ -508,12 +523,19 @@ WEB_PORT=3000
 │   └── init.sql                 # CREATE TABLE IF NOT EXISTS messages (idempotent)
 │
 ├── k8s/
-│   ├── 01-namespace.yaml        # node-3tier-app namespace
-│   ├── 02-api.yaml              # API Deployment + ClusterIP Service
-│   ├── 03-web.yaml              # Web Deployment + ClusterIP Service
-│   ├── 04-httproute.yaml        # Envoy Gateway HTTPRoute (/* and /api/*)
-│   ├── 05-hpa.yaml              # HPA for api + web (2-10 replicas, CPU 70%)
-│   └── 06-db-init.yaml          # Job: runs init.sql against RDS on deploy
+│   ├── base/                    # Static manifests (image: api/web:latest placeholder)
+│   │   ├── kustomization.yaml
+│   │   ├── namespace.yaml       # node-3tier-app namespace
+│   │   ├── configmap.yaml       # app-config: DBPORT, DBSSL, API_HOST
+│   │   ├── api.yaml             # API Deployment + ClusterIP Service (internal only)
+│   │   ├── web.yaml             # Web Deployment + ClusterIP Service
+│   │   └── hpa.yaml             # HPA for api + web (2-10 replicas, CPU 70%)
+│   ├── overlays/
+│   │   └── dev/
+│   │       ├── kustomization.yaml  # images[] patched at deploy time via kustomize
+│   │       └── tgb.yaml            # TargetGroupBinding (web only, ARN injected at deploy)
+│   └── jobs/
+│       └── db-init.yaml         # One-off Job: runs init.sql against RDS on deploy
 │
 ├── terraform/
 │   ├── environments/
@@ -718,7 +740,8 @@ kubectl delete pod pg-test -n node-3tier-app
 
 | Requirement | Status | Implementation |
 |---|---|---|
-| Web + API exposed to internet | ✅ | ALB (public subnets) → CloudFront |
+| Web exposed to internet | ✅ | ALB (public subnets) → CloudFront |
+| API internal only | ✅ | ClusterIP service, no ALB TG, cluster DNS only |
 | DB not accessible from internet | ✅ | RDS in private subnets, SG allows only EKS pod SG |
 | IaC for all resources | ✅ | Terraform 13 modules, all resources defined |
 | Handle server failures | ✅ | EKS Fargate (managed), HPA min 2 replicas |
