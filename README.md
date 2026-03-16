@@ -21,6 +21,7 @@
 - [GitHub Secrets & Variables Setup](#github-secrets--variables-setup)
 - [Deployment Guide](#deployment-guide)
 - [Operational Scripts](#operational-scripts)
+- [Database Verification](#database-verification)
 - [Requirements Checklist](#requirements-checklist)
 
 ---
@@ -642,6 +643,74 @@ Push changes to `main` branch in any of these paths:
 | `scripts/deploy.sh` | `./deploy.sh <api\|web>` | Trigger rolling restart for a tier |
 | `scripts/scale.sh` | `./scale.sh <api\|web> <n>` | Scale to `n` replicas (temporarily removes HPA) |
 | `scripts/stop.sh` | `./stop.sh` | Delete all application k8s resources |
+
+---
+
+## Database Verification
+
+Spin up a temporary `pg-test` pod in the cluster using the same `db-credentials` secret the API uses, connecting to the exact same RDS instance.
+
+### 1. Launch the pg-test pod
+
+```bash
+kubectl run pg-test \
+  --image=postgres:17-alpine \
+  --restart=Never \
+  --namespace=node-3tier-app \
+  --env="PGHOST=$(kubectl get secret db-credentials -n node-3tier-app -o jsonpath='{.data.host}' | base64 -d)" \
+  --env="PGUSER=$(kubectl get secret db-credentials -n node-3tier-app -o jsonpath='{.data.username}' | base64 -d)" \
+  --env="PGPASSWORD=$(kubectl get secret db-credentials -n node-3tier-app -o jsonpath='{.data.password}' | base64 -d)" \
+  --env="PGDATABASE=$(kubectl get secret db-credentials -n node-3tier-app -o jsonpath='{.data.dbname}' | base64 -d)" \
+  --env="PGSSLMODE=require" \
+  -- sleep 3600
+```
+
+Wait for it to be ready:
+
+```bash
+kubectl wait pod/pg-test -n node-3tier-app --for=condition=Ready --timeout=60s
+```
+
+### 2. Check DB connectivity
+
+```bash
+kubectl exec -it pg-test -n node-3tier-app -- psql -c "SELECT now();"
+```
+
+Expected output: current timestamp — confirms RDS is reachable and SSL is working.
+
+### 3. Verify the messages table exists
+
+```bash
+kubectl exec -it pg-test -n node-3tier-app -- psql -c "\d messages"
+```
+
+### 4. Insert a test row
+
+```bash
+kubectl exec -it pg-test -n node-3tier-app -- \
+  psql -c "INSERT INTO messages (text) VALUES ('hello from pg-test') RETURNING *;"
+```
+
+### 5. Read all rows back
+
+```bash
+kubectl exec -it pg-test -n node-3tier-app -- \
+  psql -c "SELECT * FROM messages ORDER BY created_at DESC;"
+```
+
+### 6. Verify via API (end-to-end)
+
+```bash
+kubectl run curl-test --image=curlimages/curl --restart=Never -n node-3tier-app --rm -it -- \
+  curl -s http://api-service.node-3tier-app.svc.cluster.local:3001/api/messages
+```
+
+### 7. Clean up
+
+```bash
+kubectl delete pod pg-test -n node-3tier-app
+```
 
 ---
 

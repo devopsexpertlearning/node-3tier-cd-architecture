@@ -66,16 +66,20 @@ resource "aws_vpc_security_group_ingress_rule" "rds_from_eks_cluster" {
   depends_on = [module.eks, module.security_groups]
 }
 
+# Allow ALB to reach EKS Fargate pods via the auto-created cluster SG
+# (Fargate pods use cluster_security_group_id, not additional SGs)
 resource "aws_vpc_security_group_ingress_rule" "eks_cluster_from_albs_tgs" {
   for_each = {
     for tg in local.alb_tgs : "${tg.alb_key}-${tg.tg_key}" => tg
   }
 
-  security_group_id            = module.security_groups.security_group_ids["eks-cluster"]
+  security_group_id            = module.eks.cluster_security_group_id
   referenced_security_group_id = module.security_groups.security_group_ids[local.albs[each.value.alb_key].security_group_key]
   from_port                    = each.value.port
   to_port                      = each.value.port
   ip_protocol                  = "tcp"
+
+  depends_on = [module.eks, module.security_groups]
 }
 
 # 1. VPC

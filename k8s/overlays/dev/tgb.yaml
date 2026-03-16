@@ -1,5 +1,5 @@
 # This file is overwritten at deploy time by the CI/CD pipeline
-# with the real Target Group ARNs fetched from AWS.
+# with the real Target Group ARN fetched from AWS.
 # Do not edit manually — changes will be overwritten on next deploy.
 apiVersion: elbv2.k8s.aws/v1beta1
 kind: TargetGroupBinding
@@ -10,17 +10,5 @@ spec:
   serviceRef:
     name: web-service
     port: 3000
-  targetGroupARN: PLACEHOLDER
-  targetType: ip
----
-apiVersion: elbv2.k8s.aws/v1beta1
-kind: TargetGroupBinding
-metadata:
-  name: api-tgb
-  namespace: node-3tier-app
-spec:
-  serviceRef:
-    name: api-service
-    port: 3001
   targetGroupARN: PLACEHOLDER
   targetType: ip

@@ -195,19 +195,6 @@ albs = {
     logs_bucket_key            = "alb-logs"
     security_group_key         = "web-api-alb"
     target_groups = {
-      api = {
-        health_check = {
-          healthy_threshold   = 3
-          interval            = 30
-          matcher             = "200"
-          path                = "/api/status"
-          timeout             = 5
-          unhealthy_threshold = 3
-        }
-        path_patterns = ["/api/*"]
-        port          = 3001
-        priority      = 100
-      }
       web = {
         health_check = {
           healthy_threshold   = 3

@@ -322,19 +322,14 @@ jobs:
           ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
           IMAGE_TAG=${{ steps.meta.outputs.image_tag }}
 
-          # Fetch target group ARNs dynamically from AWS
+          # Fetch web target group ARN dynamically from AWS
           TG_ARN_WEB=$(aws elbv2 describe-target-groups \
             --region ${{ vars.AWS_REGION }} \
             --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-web'].TargetGroupArn" \
             --output text)
-          TG_ARN_API=$(aws elbv2 describe-target-groups \
-            --region ${{ vars.AWS_REGION }} \
-            --query "TargetGroups[?TargetGroupName=='${{ vars.PROJECT_NAME }}-${{ vars.ENV }}-api'].TargetGroupArn" \
-            --output text)
           echo "TG_ARN_WEB=${TG_ARN_WEB}"
-          echo "TG_ARN_API=${TG_ARN_API}"
 
-          # Generate tgb.yaml with real ARNs into the overlay
+          # Generate tgb.yaml with real web TG ARN
           cat > k8s/overlays/dev/tgb.yaml << EOF
           apiVersion: elbv2.k8s.aws/v1beta1
           kind: TargetGroupBinding
@@ -346,18 +341,6 @@ jobs:
               name: web-service
               port: 3000
             targetGroupARN: ${TG_ARN_WEB}
-            targetType: ip
-          ---
-          apiVersion: elbv2.k8s.aws/v1beta1
-          kind: TargetGroupBinding
-          metadata:
-            name: api-tgb
-            namespace: node-3tier-app
-          spec:
-            serviceRef:
-              name: api-service
-              port: 3001
-            targetGroupARN: ${TG_ARN_API}
             targetType: ip
           EOF
 
