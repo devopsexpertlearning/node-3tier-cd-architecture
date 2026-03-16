@@ -31,7 +31,6 @@ spec:
         - name: API_HOST
           # Internal Kubernetes DNS routing to the API service
           value: "http://api-service.node-3tier-app.svc.cluster.local:3001"
-        # Health checks for fault tolerance
         readinessProbe:
           httpGet:
             path: /
