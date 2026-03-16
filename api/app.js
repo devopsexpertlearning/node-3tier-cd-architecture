@@ -2,6 +2,10 @@ var express = require('express');
 var app = express();
 var uuid = require('node-uuid');
 var bodyParser = require('body-parser');
+var morgan = require('morgan');
+
+// HTTP request logging — output goes to stdout → Fargate Fluent Bit → CloudWatch
+app.use(morgan('combined'));
 
 // Parse JSON request bodies
 app.use(bodyParser.json());
